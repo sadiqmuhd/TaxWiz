@@ -1,0 +1,16 @@
+[tool.vercel]
+entrypoint = "app.backend.app:app"
+[project]
+name = "taxwiz"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+dependencies = [
+    "flask",
+    "pinecone",
+    "python-dotenv",
+    "sentence-transformers",
+    "torch",
+    "transformers",
+    "openai"
+]
