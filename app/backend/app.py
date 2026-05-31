@@ -1,6 +1,7 @@
 import os
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_DATASETS_OFFLINE"] = "1"
+print("PINECONE_INDEX =", os.getenv("PINECONE_INDEX"))
 
 import time
 import torch
@@ -76,7 +77,7 @@ def get_bot_response():
     emb = generate_embeddings([userText], hf_model=get_embedding_model())
 
     # Step 2: Retrieve relevant chunks from Pinecone
-    context = retrieve_relevant_chunks(emb[0], 'taxwiz3', top_k=2)
+    context = retrieve_relevant_chunks(emb[0], os.getenv("PINECONE_INDEX"), top_k=2)
     logger.info(f"Retrieved context: {context}")
 
     # Step 3: Build messages
