@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TaxWiz — Nigerian Tax Assistant</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%232ecc8f'/%3E%3Ctext y='.9em' x='50%25' text-anchor='middle' font-size='62'%3E%E2%9A%96%EF%B8%8F%3C/text%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg:        #0f1117;
+      --surface:   #181c27;
+      --surface2:  #1f2435;
+      --border:    rgba(255,255,255,0.07);
+      --accent:    #2ecc8f;
+      --accent2:   #1a9e6b;
+      --user-bg:   #1e3a5f;
+      --user-text: #e8f4fd;
+      --bot-bg:    #1f2435;
+      --bot-text:  #dde3f0;
+      --muted:     #5a6380;
+      --heading:   #ffffff;
+      --warning:   #f39c12;
+      --font-display: 'Syne', sans-serif;
+      --font-body:    'DM Sans', sans-serif;
+      --transition: 0.2s ease;
+    }
+
+    *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+
+    body {
+      background: var(--bg);
+      color: var(--bot-text);
+      font-family: var(--font-body);
+      font-size: 15px;
+      line-height: 1.6;
+      height: 100vh;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      width: 260px; min-width: 260px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex; flex-direction: column;
+      padding: 28px 20px; gap: 32px;
+    }
+    .logo { display: flex; align-items: center; gap: 10px; }
+    .logo-icon {
+      width: 38px; height: 38px; background: var(--accent);
+      border-radius: 10px; display: flex; align-items: center;
+      justify-content: center; font-size: 18px; flex-shrink: 0;
+    }
+    .logo-text { font-family: var(--font-display); font-weight: 800; font-size: 20px; color: var(--heading); letter-spacing: -0.5px; }
+    .logo-sub { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 1px; }
+    .sidebar-section { display: flex; flex-direction: column; gap: 6px; }
+    .sidebar-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); padding: 0 8px; margin-bottom: 4px; }
+    .sidebar-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 12px; border-radius: 10px; cursor: pointer;
+      color: var(--muted); font-size: 13.5px; transition: all var(--transition); user-select: none;
+    }
+    .sidebar-item:hover { background: var(--surface2); color: var(--bot-text); }
+    .sidebar-item.active { background: rgba(46,204,143,0.12); color: var(--accent); }
+    .sidebar-item .icon { font-size: 15px; width: 18px; text-align: center; }
+    .sidebar-bottom { margin-top: auto; padding: 14px; background: rgba(46,204,143,0.06); border: 1px solid rgba(46,204,143,0.15); border-radius: 16px; }
+    .sidebar-bottom p { font-size: 12px; color: var(--muted); line-height: 1.5; }
+    .sidebar-bottom strong { color: var(--accent); font-weight: 500; }
+
+    /* ── Main ── */
+    .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+    /* ── Header ── */
+    .header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 18px 28px; border-bottom: 1px solid var(--border);
+      background: var(--surface); flex-shrink: 0;
+    }
+    .header-left { display: flex; align-items: center; gap: 12px; }
+    .status-dot { width: 8px; height: 8px; background: var(--accent); border-radius: 50%; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.5;transform:scale(.85)} }
+    .header-title { font-family: var(--font-display); font-weight: 700; font-size: 16px; color: var(--heading); }
+    .header-sub { font-size: 12px; color: var(--muted); }
+    .header-badge { font-size: 11px; font-weight: 500; padding: 4px 10px; background: rgba(46,204,143,0.1); color: var(--accent); border: 1px solid rgba(46,204,143,0.2); border-radius: 20px; }
+
+    /* ── Views ── */
+    .view { display: none; flex: 1; flex-direction: column; overflow: hidden; }
+    .view.active { display: flex; }
+
+    /* ── Chat ── */
+    .chat-area { flex: 1; overflow-y: auto; padding: 28px; display: flex; flex-direction: column; gap: 20px; scroll-behavior: smooth; }
+    .chat-area::-webkit-scrollbar { width: 4px; }
+    .chat-area::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 4px; }
+
+    .welcome-card { background: linear-gradient(135deg,rgba(46,204,143,.08),rgba(30,58,95,.15)); border: 1px solid rgba(46,204,143,.15); border-radius: 20px; padding: 28px; margin-bottom: 8px; }
+    .welcome-card h2 { font-family: var(--font-display); font-weight: 800; font-size: 22px; color: var(--heading); margin-bottom: 8px; }
+    .welcome-card h2 span { color: var(--accent); }
+    .welcome-card p { font-size: 14px; color: var(--muted); line-height: 1.6; max-width: 480px; }
+    .suggestions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+    .suggestion-chip { font-size: 12.5px; padding: 7px 14px; background: var(--surface2); border: 1px solid var(--border); border-radius: 20px; cursor: pointer; color: var(--bot-text); transition: all var(--transition); }
+    .suggestion-chip:hover { background: rgba(46,204,143,.1); border-color: rgba(46,204,143,.3); color: var(--accent); }
+
+    .message-row { display: flex; gap: 12px; animation: fadeUp .25s ease; }
+    @keyframes fadeUp { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
+    .message-row.user { flex-direction: row-reverse; }
+    .avatar { width: 34px; height: 34px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 15px; flex-shrink: 0; margin-top: 2px; }
+    .avatar.bot { background: rgba(46,204,143,.15); }
+    .avatar.user { background: var(--user-bg); }
+    .message-content { max-width: 68%; display: flex; flex-direction: column; gap: 4px; }
+    .message-row.user .message-content { align-items: flex-end; }
+    .message-meta { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); padding: 0 4px; }
+    .message-row.user .message-meta { flex-direction: row-reverse; }
+    .sender-name { font-weight: 500; }
+    .bubble { padding: 13px 17px; border-radius: 16px; font-size: 14.5px; line-height: 1.65; word-break: break-word; }
+    .bot .bubble { background: var(--bot-bg); color: var(--bot-text); border: 1px solid var(--border); border-top-left-radius: 4px; }
+    .user .bubble { background: var(--user-bg); color: var(--user-text); border-top-right-radius: 4px; }
+
+    .typing-row { display: flex; gap: 12px; animation: fadeUp .25s ease; }
+    .typing-bubble { background: var(--bot-bg); border: 1px solid var(--border); border-radius: 16px; border-top-left-radius: 4px; padding: 14px 18px; display: flex; align-items: center; gap: 5px; }
+    .typing-dot { width: 7px; height: 7px; background: var(--muted); border-radius: 50%; animation: typingBounce 1.2s infinite; }
+    .typing-dot:nth-child(2){animation-delay:.2s} .typing-dot:nth-child(3){animation-delay:.4s}
+    @keyframes typingBounce { 0%,60%,100%{transform:translateY(0);opacity:.4} 30%{transform:translateY(-5px);opacity:1} }
+
+    .input-area { padding: 18px 28px 24px; border-top: 1px solid var(--border); background: var(--surface); flex-shrink: 0; }
+    .input-wrapper { display: flex; align-items: center; gap: 10px; background: var(--surface2); border: 1px solid var(--border); border-radius: 14px; padding: 6px 6px 6px 18px; transition: border-color var(--transition); }
+    .input-wrapper:focus-within { border-color: rgba(46,204,143,.4); box-shadow: 0 0 0 3px rgba(46,204,143,.06); }
+    .chat-input { flex: 1; background: transparent; border: none; outline: none; color: var(--heading); font-family: var(--font-body); font-size: 14.5px; padding: 8px 0; }
+    .chat-input::placeholder { color: var(--muted); }
+    .send-btn { width: 40px; height: 40px; background: var(--accent); border: none; border-radius: 10px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: all var(--transition); color: #0f1117; font-size: 17px; }
+    .send-btn:hover { background: var(--accent2); transform: scale(1.05); }
+    .send-btn:active { transform: scale(.97); }
+    .send-btn:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+    .input-hint { font-size: 11.5px; color: var(--muted); text-align: center; margin-top: 10px; }
+
+    /* ── Calculator ── */
+    .calc-area { flex: 1; overflow-y: auto; padding: 32px 40px; }
+    .calc-area::-webkit-scrollbar { width: 4px; }
+    .calc-area::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 4px; }
+    .calc-title { font-family: var(--font-display); font-weight: 800; font-size: 26px; color: var(--heading); margin-bottom: 6px; }
+    .calc-title span { color: var(--accent); }
+    .calc-subtitle { font-size: 13.5px; color: var(--muted); margin-bottom: 32px; }
+
+    .calc-tabs { display: flex; gap: 0; margin-bottom: 28px; border-bottom: 1px solid var(--border); }
+    .calc-tab { padding: 10px 20px; font-size: 13px; font-weight: 500; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: all var(--transition); }
+    .calc-tab:hover { color: var(--bot-text); }
+    .calc-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    .calc-panel { display: none; }
+    .calc-panel.active { display: block; animation: fadeUp .2s ease; }
+
+    .calc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: start; }
+
+    .info-box { background: rgba(46,204,143,.06); border: 1px solid rgba(46,204,143,.15); border-radius: 12px; padding: 16px 20px; margin-bottom: 24px; font-size: 13px; color: var(--muted); line-height: 1.6; }
+    .info-box strong { color: var(--accent); }
+
+    .form-group { margin-bottom: 20px; }
+    .form-label { display: block; font-size: 12px; font-weight: 500; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+    .form-input, .form-select { width: 100%; background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; color: var(--heading); font-family: var(--font-body); font-size: 14.5px; outline: none; transition: border-color var(--transition); appearance: none; }
+    .form-input:focus, .form-select:focus { border-color: rgba(46,204,143,.4); box-shadow: 0 0 0 3px rgba(46,204,143,.06); }
+    .form-input::placeholder { color: var(--muted); }
+
+    .calc-btn { width: 100%; padding: 13px; background: var(--accent); color: #0f1117; border: none; border-radius: 10px; font-family: var(--font-display); font-size: 15px; font-weight: 700; cursor: pointer; transition: all var(--transition); margin-top: 8px; }
+    .calc-btn:hover { background: var(--accent2); transform: translateY(-1px); }
+    .calc-btn:active { transform: translateY(0); }
+
+    .result-card { background: var(--surface2); border: 1px solid var(--border); border-radius: 16px; padding: 24px; display: none; }
+    .result-card.visible { display: block; animation: fadeUp .25s ease; }
+    .result-header { font-family: var(--font-display); font-weight: 700; font-size: 15px; color: var(--heading); margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+    .result-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13.5px; }
+    .result-row:last-child { border-bottom: none; }
+    .result-row .label { color: var(--muted); }
+    .result-row .value { font-weight: 500; color: var(--bot-text); }
+    .result-row.total .label { color: var(--heading); font-weight: 600; font-size: 14px; }
+    .result-row.total .value { color: var(--accent); font-size: 18px; font-weight: 700; font-family: var(--font-display); }
+    .result-row.highlight .value { color: var(--warning); }
+    .result-note { margin-top: 16px; padding: 12px; background: rgba(46,204,143,.06); border-radius: 8px; font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+    .band-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 16px; }
+    .band-table th { text-align: left; padding: 8px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); border-bottom: 1px solid var(--border); }
+    .band-table td { padding: 9px 12px; border-bottom: 1px solid rgba(255,255,255,.03); color: var(--bot-text); }
+    .band-table tr.active-band td { background: rgba(46,204,143,.07); color: var(--accent); }
+
+    /* ── States: errors, sources, empty ── */
+    .form-error { display: none; margin-top: 12px; padding: 11px 14px; background: rgba(231,76,60,.08); border: 1px solid rgba(231,76,60,.25); border-radius: 10px; font-size: 12.5px; color: #ff9a8f; }
+    .form-error.visible { display: block; }
+    .calc-btn:disabled { opacity: .55; cursor: progress; transform: none; }
+    .result-empty { font-size: 13px; color: var(--muted); text-align: center; padding: 28px 12px; border: 1px dashed var(--border); border-radius: 16px; }
+    .bubble.error { background: rgba(231,76,60,.08); border: 1px solid rgba(231,76,60,.25); color: #ff9a8f; }
+    .sources { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .sources-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+    .source-item { font-size: 12px; color: var(--muted); background: rgba(255,255,255,.02); border: 1px solid var(--border); border-left: 2px solid var(--accent); border-radius: 8px; padding: 8px 11px; line-height: 1.5; }
+    .source-item b { color: var(--accent); font-weight: 500; }
+
+    /* ── Responsive ── */
+    @media (max-width: 900px) {
+      .calc-grid { grid-template-columns: 1fr; gap: 24px; }
+      .message-content { max-width: 82%; }
+    }
+    @media (max-width: 720px) {
+      body { flex-direction: column; height: 100dvh; }
+      .sidebar { width: 100%; min-width: 0; flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-right: none; border-bottom: 1px solid var(--border); overflow-x: auto; }
+      .sidebar-section { flex-direction: row; gap: 6px; }
+      .sidebar-label, .sidebar-bottom, .logo-sub { display: none; }
+      .sidebar-item { padding: 8px 12px; white-space: nowrap; }
+      .header { padding: 12px 16px; }
+      .header-sub, .header-badge { display: none; }
+      .chat-area { padding: 18px 14px; gap: 16px; }
+      .message-content { max-width: 88%; }
+      .input-area { padding: 12px 14px 16px; }
+      .calc-area { padding: 20px 16px; }
+      .calc-tabs { overflow-x: auto; }
+      .calc-tab { padding: 10px 14px; white-space: nowrap; }
+      .welcome-card { padding: 20px; }
+    }
+  </style>
+</head>
+<body>
+
+  <aside class="sidebar">
+    <div class="logo">
+      <div class="logo-icon">⚖️</div>
+      <div>
+        <div class="logo-text">TaxWiz</div>
+        <div class="logo-sub">Nigerian Tax Assistant</div>
+      </div>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Menu</div>
+      <div class="sidebar-item active" onclick="switchView('chat',this)">
+        <span class="icon">💬</span> Tax Assistant
+      </div>
+      <div class="sidebar-item" onclick="switchView('calculator',this)">
+        <span class="icon">🧮</span> Tax Calculator
+      </div>
+    </div>
+    <div class="sidebar-bottom">
+      <p>Powered by <strong>Nigerian Tax Act 2025</strong>. Always verify with a certified tax professional.</p>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="header">
+      <div class="header-left">
+        <div class="status-dot"></div>
+        <div>
+          <div class="header-title" id="headerTitle">Tax Assistant</div>
+          <div class="header-sub" id="headerSub">Ask me anything about Nigerian tax law</div>
+        </div>
+      </div>
+      <div class="header-badge">🇳🇬 Tax Act 2025</div>
+    </header>
+
+    <!-- CHAT VIEW -->
+    <div class="view active" id="view-chat">
+      <div class="chat-area" id="chatArea">
+        <div class="welcome-card">
+          <h2>Hello! I'm <span>TaxWiz</span> 👋</h2>
+          <p>Your intelligent assistant for Nigerian Tax Law. Ask me about tax definitions, rates, obligations, and more — grounded in the Nigerian Tax Act 2025.</p>
+          <div class="suggestions">
+            <div class="suggestion-chip" onclick="sendSuggestion('What is income tax?')">What is income tax?</div>
+            <div class="suggestion-chip" onclick="sendSuggestion('What is VAT in Nigeria?')">What is VAT?</div>
+            <div class="suggestion-chip" onclick="sendSuggestion('Who is required to pay tax in Nigeria?')">Who pays tax?</div>
+            <div class="suggestion-chip" onclick="sendSuggestion('What is the definition of taxable income?')">Taxable income</div>
+          </div>
+        </div>
+      </div>
+      <div class="input-area">
+        <div class="input-wrapper">
+          <input type="text" class="chat-input" id="chatInput" placeholder="Ask a tax question..." autocomplete="off"/>
+          <button class="send-btn" id="sendBtn" onclick="sendMessage()">➤</button>
+        </div>
+        <div class="input-hint">Answers are based on the Nigerian Tax Act 2025 · Not legal advice</div>
+      </div>
+    </div>
+
+    <!-- CALCULATOR VIEW -->
+    <div class="view" id="view-calculator">
+      <div class="calc-area">
+        <div class="calc-title">Tax <span>Calculator</span></div>
+        <div class="calc-subtitle">Compute your Nigerian tax liability based on Tax Act 2025 rates</div>
+
+        <div class="calc-tabs">
+          <div class="calc-tab active" onclick="switchTab('paye',this)">Personal Income (PAYE)</div>
+          <div class="calc-tab" onclick="switchTab('cit',this)">Company Income Tax</div>
+          <div class="calc-tab" onclick="switchTab('vat',this)">VAT</div>
+          <div class="calc-tab" onclick="switchTab('wht',this)">Withholding Tax</div>
+        </div>
+
+        <!-- PAYE -->
+        <div class="calc-panel active" id="panel-paye">
+          <div class="info-box">
+            <strong>Personal Income Tax (PAYE)</strong> uses a graduated rate: 7% on the first ₦300k, rising to 24% above ₦3.2M annually. A minimum tax of <strong>1% of gross income</strong> applies where computed tax is lower.
+          </div>
+          <div class="calc-grid">
+            <div>
+              <div class="form-group">
+                <label class="form-label">Annual Gross Income (₦)</label>
+                <input type="number" class="form-input" id="paye-income" placeholder="e.g. 1200000" min="0"/>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Annual Pension Contribution (₦)</label>
+                <input type="number" class="form-input" id="paye-pension" placeholder="e.g. 96000" min="0"/>
+              </div>
+              <div class="form-group">
+                <label class="form-label">National Housing Fund — NHF (₦)</label>
+                <input type="number" class="form-input" id="paye-nhf" placeholder="e.g. 30000" min="0"/>
+              </div>
+              <button class="calc-btn" id="paye-btn" onclick="calcPAYE()">Calculate PAYE Tax</button>
+              <div class="form-error" id="paye-error"></div>
+            </div>
+            <div class="result-empty" id="paye-empty">Enter your annual gross income to see your PAYE breakdown.</div>
+            <div class="result-card" id="paye-result">
+              <div class="result-header">📊 PAYE Breakdown</div>
+              <div class="result-row"><span class="label">Gross Annual Income</span><span class="value" id="r-paye-gross">—</span></div>
+              <div class="result-row"><span class="label">Total Reliefs & Deductions</span><span class="value" id="r-paye-relief">—</span></div>
+              <div class="result-row"><span class="label">Taxable Income</span><span class="value" id="r-paye-taxable">—</span></div>
+              <div class="result-row"><span class="label">Computed Tax</span><span class="value" id="r-paye-computed">—</span></div>
+              <div class="result-row"><span class="label">Minimum Tax (1%)</span><span class="value" id="r-paye-min">—</span></div>
+              <div class="result-row total"><span class="label">Annual Tax Payable</span><span class="value" id="r-paye-annual">—</span></div>
+              <div class="result-row highlight"><span class="label">Monthly PAYE Deduction</span><span class="value" id="r-paye-monthly">—</span></div>
+              <div class="result-row"><span class="label">Effective Tax Rate</span><span class="value" id="r-paye-rate">—</span></div>
+              <table class="band-table">
+                <thead><tr><th>Income Band</th><th>Rate</th><th>Tax</th></tr></thead>
+                <tbody id="paye-bands-body"></tbody>
+              </table>
+              <div class="result-note">⚠️ Estimate based on standard reliefs. Actual PAYE may vary with additional allowances and employer arrangements.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- CIT -->
+        <div class="calc-panel" id="panel-cit">
+          <div class="info-box">
+            <strong>Company Income Tax (CIT):</strong> Small companies (≤ ₦25M turnover): <strong>0%</strong>. Medium (₦25M–₦100M): <strong>20%</strong>. Large (&gt; ₦100M): <strong>30%</strong> of taxable profit.
+          </div>
+          <div class="calc-grid">
+            <div>
+              <div class="form-group">
+                <label class="form-label">Annual Turnover (₦)</label>
+                <input type="number" class="form-input" id="cit-turnover" placeholder="e.g. 50000000" min="0"/>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Assessable Profit (₦)</label>
+                <input type="number" class="form-input" id="cit-profit" placeholder="e.g. 12000000" min="0"/>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Capital Allowances (₦)</label>
+                <input type="number" class="form-input" id="cit-allowances" placeholder="e.g. 2000000" min="0"/>
+              </div>
+              <button class="calc-btn" id="cit-btn" onclick="calcCIT()">Calculate Company Tax</button>
+              <div class="form-error" id="cit-error"></div>
+            </div>
+            <div class="result-empty" id="cit-empty">Enter turnover and assessable profit to see the company tax due.</div>
+            <div class="result-card" id="cit-result">
+              <div class="result-header">📊 CIT Breakdown</div>
+              <div class="result-row"><span class="label">Annual Turnover</span><span class="value" id="r-cit-turnover">—</span></div>
+              <div class="result-row"><span class="label">Company Category</span><span class="value" id="r-cit-category">—</span></div>
+              <div class="result-row"><span class="label">CIT Rate</span><span class="value" id="r-cit-rate">—</span></div>
+              <div class="result-row"><span class="label">Assessable Profit</span><span class="value" id="r-cit-profit">—</span></div>
+              <div class="result-row"><span class="label">Capital Allowances</span><span class="value" id="r-cit-allowances">—</span></div>
+              <div class="result-row"><span class="label">Taxable Profit</span><span class="value" id="r-cit-taxable">—</span></div>
+              <div class="result-row total"><span class="label">CIT Payable</span><span class="value" id="r-cit-tax">—</span></div>
+              <div class="result-note">⚠️ Education tax (3% of assessable profit) and other levies may apply separately.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- VAT -->
+        <div class="calc-panel" id="panel-vat">
+          <div class="info-box">
+            <strong>VAT</strong> in Nigeria is charged at <strong>7.5%</strong>. Basic food, medical supplies, educational materials, baby products, and exported goods/services are exempt.
+          </div>
+          <div class="calc-grid">
+            <div>
+              <div class="form-group">
+                <label class="form-label">Transaction Amount (₦)</label>
+                <input type="number" class="form-input" id="vat-amount" placeholder="e.g. 500000" min="0"/>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Amount Type</label>
+                <select class="form-select" id="vat-type">
+                  <option value="exclusive">VAT Exclusive (add VAT on top)</option>
+                  <option value="inclusive">VAT Inclusive (VAT already included)</option>
+                </select>
+              </div>
+              <button class="calc-btn" id="vat-btn" onclick="calcVAT()">Calculate VAT</button>
+              <div class="form-error" id="vat-error"></div>
+            </div>
+            <div class="result-empty" id="vat-empty">Enter a transaction amount to split out the 7.5% VAT.</div>
+            <div class="result-card" id="vat-result">
+              <div class="result-header">📊 VAT Breakdown</div>
+              <div class="result-row"><span class="label">VAT Rate</span><span class="value">7.5%</span></div>
+              <div class="result-row"><span class="label">Net Amount (excl. VAT)</span><span class="value" id="r-vat-net">—</span></div>
+              <div class="result-row highlight"><span class="label">VAT Amount</span><span class="value" id="r-vat-amount">—</span></div>
+              <div class="result-row total"><span class="label">Total (incl. VAT)</span><span class="value" id="r-vat-total">—</span></div>
+              <div class="result-note">⚠️ VAT-exempt: basic food, medical supplies, educational materials, baby products, exported services.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- WHT -->
+        <div class="calc-panel" id="panel-wht">
+          <div class="info-box">
+            <strong>Withholding Tax (WHT)</strong> is deducted at source and remitted to FIRS within 21 days. It acts as a credit against the recipient's final tax liability.
+          </div>
+          <div class="calc-grid">
+            <div>
+              <div class="form-group">
+                <label class="form-label">Transaction Amount (₦)</label>
+                <input type="number" class="form-input" id="wht-amount" placeholder="e.g. 1000000" min="0"/>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Transaction Type</label>
+                <select class="form-select" id="wht-type">
+                  <option value="dividends">Dividends / Interest / Rent (10%)</option>
+                  <option value="director">Director Fees (10%)</option>
+                  <option value="commission">Commission / Royalties (10%)</option>
+                  <option value="construction">Construction / Survey (5%)</option>
+                  <option value="consultancy">Consultancy / Management Fees (5%)</option>
+                  <option value="professional">Technical / Professional Fees (5%)</option>
+                  <option value="contracts">Contracts — goods &amp; services (5%)</option>
+                </select>
+              </div>
+              <button class="calc-btn" id="wht-btn" onclick="calcWHT()">Calculate WHT</button>
+              <div class="form-error" id="wht-error"></div>
+            </div>
+            <div class="result-empty" id="wht-empty">Enter an amount and transaction type to see the WHT deducted.</div>
+            <div class="result-card" id="wht-result">
+              <div class="result-header">📊 WHT Breakdown</div>
+              <div class="result-row"><span class="label">Gross Amount</span><span class="value" id="r-wht-gross">—</span></div>
+              <div class="result-row"><span class="label">WHT Rate</span><span class="value" id="r-wht-rate">—</span></div>
+              <div class="result-row highlight"><span class="label">WHT Deducted</span><span class="value" id="r-wht-tax">—</span></div>
+              <div class="result-row total"><span class="label">Net Amount Payable</span><span class="value" id="r-wht-net">—</span></div>
+              <div class="result-note">⚠️ WHT is a credit against the recipient's final tax. Remit to FIRS within 21 days of deduction.</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </main>
+
+  <script>
+    // ── Shared helpers ─────────────────────────────────────────────────────
+    const fmt = n => '₦' + Number(n).toLocaleString('en-NG', {minimumFractionDigits:2, maximumFractionDigits:2});
+    const pct = n => Number(n).toFixed(2) + '%';
+    const $ = id => document.getElementById(id);
+    const esc = s => String(s).replace(/[&<>"']/g, c => (
+      {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]
+    ));
+
+    /* Every backend call goes through here, so success and failure are shaped
+       the same way everywhere in the UI. */
+    async function api(path, body) {
+      let res;
+      try {
+        res = await fetch(path, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body)
+        });
+      } catch (e) {
+        throw new Error('Could not reach the TaxWiz server. Check your connection.');
+      }
+      let data = {};
+      try { data = await res.json(); } catch (e) { /* non-JSON error page */ }
+      if (!res.ok) {
+        throw new Error(data.message || data.error || ('Request failed (' + res.status + ').'));
+      }
+      return data;
+    }
+
+    // ── Navigation ─────────────────────────────────────────────────────────
+    function switchView(view, el) {
+      document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+      document.querySelectorAll('.sidebar-item').forEach(s => s.classList.remove('active'));
+      $('view-' + view).classList.add('active');
+      el.classList.add('active');
+      const titles = {
+        chat: ['Tax Assistant', 'Ask me anything about Nigerian tax law'],
+        calculator: ['Tax Calculator', 'Estimate your Nigerian tax liability'],
+      };
+      $('headerTitle').textContent = titles[view][0];
+      $('headerSub').textContent = titles[view][1];
+    }
+
+    function switchTab(tab, el) {
+      document.querySelectorAll('.calc-tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.calc-panel').forEach(p => p.classList.remove('active'));
+      el.classList.add('active');
+      $('panel-' + tab).classList.add('active');
+    }
+
+    // ── Chat ───────────────────────────────────────────────────────────────
+    const chatArea = $('chatArea');
+    const chatInput = $('chatInput');
+    const sendBtn = $('sendBtn');
+
+    chatInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    });
+
+    function getTime() {
+      const n = new Date();
+      return String(n.getHours()).padStart(2,'0') + ':' + String(n.getMinutes()).padStart(2,'0');
+    }
+
+    function appendMessage(sender, text, side, opts) {
+      opts = opts || {};
+      const row = document.createElement('div');
+      row.className = 'message-row ' + side;
+      let sourcesHtml = '';
+      if (opts.sources && opts.sources.length) {
+        sourcesHtml = '<div class="sources"><div class="sources-label">Sources — Nigerian tax corpus</div>' +
+          opts.sources.map(s =>
+            '<div class="source-item"><b>' + esc(s.id) + '</b> · similarity ' +
+            esc(s.score) + '<br>' + esc(s.excerpt) + '…</div>'
+          ).join('') + '</div>';
+      }
+      row.innerHTML =
+        '<div class="avatar ' + side + '">' + (side === 'user' ? '👤' : '⚖️') + '</div>' +
+        '<div class="message-content">' +
+          '<div class="message-meta"><span class="sender-name">' + esc(sender) + '</span><span>' + getTime() + '</span></div>' +
+          '<div class="bubble' + (opts.error ? ' error' : '') + '">' + esc(text) + '</div>' +
+          sourcesHtml +
+        '</div>';
+      chatArea.appendChild(row);
+      chatArea.scrollTop = chatArea.scrollHeight;
+    }
+
+    function showTyping() {
+      const row = document.createElement('div');
+      row.className = 'typing-row'; row.id = 'typingIndicator';
+      row.innerHTML = '<div class="avatar bot">⚖️</div><div class="typing-bubble"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>';
+      chatArea.appendChild(row);
+      chatArea.scrollTop = chatArea.scrollHeight;
+    }
+
+    function removeTyping() { const el = $('typingIndicator'); if (el) el.remove(); }
+
+    async function sendMessage() {
+      const text = chatInput.value.trim();
+      if (!text) return;
+      appendMessage('You', text, 'user');
+      chatInput.value = '';
+      sendBtn.disabled = true;
+      showTyping();
+      try {
+        const data = await api('/api/ask', {question: text});
+        removeTyping();
+        appendMessage('TaxWiz', data.answer, 'bot', {sources: data.sources});
+      } catch (err) {
+        removeTyping();
+        appendMessage('TaxWiz', err.message, 'bot', {error: true});
+      } finally {
+        sendBtn.disabled = false;
+        chatInput.focus();
+      }
+    }
+
+    function sendSuggestion(text) { chatInput.value = text; sendMessage(); }
+
+    // ── Calculator plumbing ────────────────────────────────────────────────
+    function num(id) {
+      const raw = $(id).value.trim();
+      return raw === '' ? null : Number(raw);
+    }
+
+    function showError(key, message) {
+      const el = $(key + '-error');
+      el.textContent = message;
+      el.classList.add('visible');
+    }
+
+    function clearError(key) { $(key + '-error').classList.remove('visible'); }
+
+    function reveal(key) {
+      $(key + '-result').classList.add('visible');
+      $(key + '-empty').style.display = 'none';
+    }
+
+    /* Sends the figures to /api/calculate/<type> and hands the JSON to `render`.
+       The browser never does the arithmetic — the server owns the tax rules. */
+    async function runCalc(key, payload, render) {
+      clearError(key);
+      const btn = $(key + '-btn');
+      const label = btn.textContent;
+      btn.disabled = true; btn.textContent = 'Calculating…';
+      try {
+        render(await api('/api/calculate/' + key, payload));
+        reveal(key);
+      } catch (err) {
+        showError(key, err.message);
+      } finally {
+        btn.disabled = false; btn.textContent = label;
+      }
+    }
+
+    // PAYE
+    function calcPAYE() {
+      runCalc('paye', {
+        gross_income: num('paye-income'),
+        pension: num('paye-pension'),
+        nhf: num('paye-nhf')
+      }, r => {
+        $('r-paye-gross').textContent    = fmt(r.gross_income);
+        $('r-paye-relief').textContent   = fmt(r.total_relief);
+        $('r-paye-taxable').textContent  = fmt(r.taxable_income);
+        $('r-paye-computed').textContent = fmt(r.computed_tax);
+        $('r-paye-min').textContent      = fmt(r.minimum_tax) + (r.minimum_tax_applied ? ' (applied)' : '');
+        $('r-paye-annual').textContent   = fmt(r.annual_tax);
+        $('r-paye-monthly').textContent  = fmt(r.monthly_tax);
+        $('r-paye-rate').textContent     = pct(r.effective_rate);
+        $('paye-bands-body').innerHTML   = r.bands.map(b =>
+          '<tr class="' + (b.applied ? 'active-band' : '') + '"><td>' + esc(b.label) +
+          '</td><td>' + pct(b.rate) + '</td><td>' + (b.applied ? fmt(b.tax) : '—') + '</td></tr>'
+        ).join('');
+      });
+    }
+
+    // CIT
+    function calcCIT() {
+      runCalc('cit', {
+        turnover: num('cit-turnover'),
+        assessable_profit: num('cit-profit'),
+        capital_allowances: num('cit-allowances')
+      }, r => {
+        $('r-cit-turnover').textContent   = fmt(r.turnover);
+        $('r-cit-category').textContent   = r.category;
+        $('r-cit-rate').textContent       = pct(r.rate);
+        $('r-cit-profit').textContent     = fmt(r.assessable_profit);
+        $('r-cit-allowances').textContent = fmt(r.capital_allowances);
+        $('r-cit-taxable').textContent    = fmt(r.taxable_profit);
+        $('r-cit-tax').textContent        = fmt(r.tax_payable);
+      });
+    }
+
+    // VAT
+    function calcVAT() {
+      runCalc('vat', {
+        amount: num('vat-amount'),
+        mode: $('vat-type').value
+      }, r => {
+        $('r-vat-net').textContent    = fmt(r.net_amount);
+        $('r-vat-amount').textContent = fmt(r.vat_amount);
+        $('r-vat-total').textContent  = fmt(r.total_amount);
+      });
+    }
+
+    // WHT
+    function calcWHT() {
+      runCalc('wht', {
+        amount: num('wht-amount'),
+        transaction_type: $('wht-type').value
+      }, r => {
+        $('r-wht-gross').textContent = fmt(r.gross_amount);
+        $('r-wht-rate').textContent  = pct(r.rate);
+        $('r-wht-tax').textContent   = fmt(r.wht_deducted);
+        $('r-wht-net').textContent   = fmt(r.net_amount);
+      });
+    }
+  </script>
+</body>
+</html>
