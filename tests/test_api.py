@@ -18,12 +18,12 @@ def test_health_reports_healthy(client):
 
 def test_health_does_not_require_credentials(client, monkeypatch):
     """The probe must stay green even with no API keys, or Railway kills the app."""
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("PINECONE_API_KEY", raising=False)
 
     body = client.get("/health").get_json()
     assert body["status"] == "healthy"
-    assert body["openai_configured"] is False
+    assert body["gemini_configured"] is False
 
 
 def test_home_page_renders_the_ui(client):
@@ -128,13 +128,13 @@ def test_ask_returns_the_answer_and_its_sources(client, monkeypatch):
 
 def test_ask_reports_missing_configuration_as_503(client, monkeypatch):
     def explode(question):
-        raise rag.ConfigurationError("OPENAI_API_KEY is not configured.")
+        raise rag.ConfigurationError("GEMINI_API_KEY is not configured.")
 
     monkeypatch.setattr(rag, "answer_question", explode)
     response = client.post("/api/ask", json={"question": "What is VAT?"})
 
     assert response.status_code == 503
-    assert "OPENAI_API_KEY" in response.get_json()["message"]
+    assert "GEMINI_API_KEY" in response.get_json()["message"]
 
 
 def test_ask_never_leaks_a_stack_trace(client, monkeypatch):

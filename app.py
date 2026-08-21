@@ -37,11 +37,11 @@ def home():
 
 @app.get("/health")
 def health():
-    """Liveness probe. Deliberately does not touch OpenAI or Pinecone."""
+    """Liveness probe. Deliberately does not touch Gemini or Pinecone."""
     return jsonify({
         "status": "healthy",
         "service": "TaxWiz",
-        "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
+        "gemini_configured": bool(os.getenv("GEMINI_API_KEY")),
         "pinecone_configured": bool(os.getenv("PINECONE_API_KEY")),
     })
 

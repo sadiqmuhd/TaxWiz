@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.11-blue)
 ![Flask](https://img.shields.io/badge/Flask-3.1-lightgrey)
 ![Pinecone](https://img.shields.io/badge/Vector_DB-Pinecone-purple)
-![Tests](https://img.shields.io/badge/tests-60%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-69%20passing-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ---
@@ -56,11 +56,11 @@ TaxWiz uses each for what it is good at.
                     ▼                               ▼
               tax.py                              rag.py
       ┌─────────────────────┐        ┌──────────────────────────────┐
-      │ fixed rate tables   │        │ 1. embed question (OpenAI)   │
+      │ fixed rate tables   │        │ 1. embed question (Gemini)   │
       │ pure functions      │        │ 2. search Pinecone namespace │
       │ no network, no LLM  │        │ 3. filter by similarity      │
       └─────────────────────┘        │ 4. build cited prompt        │
-                    │                │ 5. generate answer (OpenAI)  │
+                    │                │ 5. generate answer (Gemini)  │
                     │                └──────────────────────────────┘
                     │                               │
                     └───────────────┬───────────────┘
@@ -79,8 +79,8 @@ TaxWiz uses each for what it is good at.
 | Web framework | Flask 3.1 |
 | Production server | Gunicorn (on Railway) |
 | Vector database | Pinecone (serverless, cosine, 1536-dim) |
-| Embeddings | OpenAI `text-embedding-3-small` |
-| Generation | OpenAI `gpt-4o-mini` |
+| Embeddings | Gemini `gemini-embedding-001` (1536-dim) |
+| Generation | Gemini `gemini-3.6-flash` |
 | Frontend | Server-rendered HTML, vanilla CSS + JavaScript (`fetch`) |
 | Tests | pytest |
 
@@ -143,9 +143,9 @@ Copy `.env.example` to `.env` and fill in your keys:
 cp .env.example .env
 ```
 
-You need an [OpenAI](https://platform.openai.com/) API key and a
+You need a [Google AI Studio](https://aistudio.google.com/apikey) API key and a
 [Pinecone](https://www.pinecone.io/) API key. `PINECONE_INDEX` and `PINECONE_NAMESPACE`
-must point at an index built with the same embedding model (1536 dimensions).
+must point at a namespace built with the same embedding model — see below.
 
 **5. Run**
 
@@ -167,12 +167,35 @@ python ingest.py --source data --create-index
 ```
 
 This chunks each document (1200 characters, 200-character overlap), embeds the chunks
-with `text-embedding-3-small`, and upserts them into `PINECONE_INDEX` under
-`PINECONE_NAMESPACE`. Use `--dry-run` to preview the chunking without spending tokens.
+with `gemini-embedding-001`, and upserts them into `PINECONE_INDEX` under
+`PINECONE_NAMESPACE`. Use `--dry-run` to preview the chunking without spending quota.
 
-The `data/` folder is git-ignored — source documents are not redistributed here.
+Because each vector keeps its own text in metadata, a namespace can also be re-embedded
+with a different model without the original documents:
 
----
+```bash
+python ingest.py --from-namespace wiztax
+```
+
+That reads every passage out of the `wiztax` namespace and writes freshly embedded
+copies into whatever `PINECONE_NAMESPACE` currently points at.
+
+### One rule worth knowing
+
+**Embeddings from different models are not comparable.** A `gemini-embedding-001` vector
+and a `text-embedding-3-small` vector occupy unrelated spaces, so querying one model's
+index with the other model's vector does not fail — it returns confidently wrong
+passages. Keep one namespace per embedding model and switch between them with
+`PINECONE_NAMESPACE`. This project uses `wiztax-gemini`; the older OpenAI-embedded
+`wiztax` namespace is left intact alongside it.
+
+Two details `ingest.py` and `rag.py` keep in sync, and which must not drift apart:
+
+- **Task type.** Passages are embedded as `RETRIEVAL_DOCUMENT` and questions as
+  `RETRIEVAL_QUERY`. Gemini treats the two asymmetrically; mixing them degrades results.
+- **Dimension.** `gemini-embedding-001` returns 3072 dimensions by default and is
+  truncated to `EMBEDDING_DIMENSIONS` (1536) to match the index, then renormalised to
+  unit length — Gemini only normalises at full width.
 
 ## API
 
@@ -180,10 +203,10 @@ The `data/` folder is git-ignored — source documents are not redistributed her
 
 ```json
 { "status": "healthy", "service": "TaxWiz",
-  "openai_configured": true, "pinecone_configured": true }
+  "gemini_configured": true, "pinecone_configured": true }
 ```
 
-Never calls OpenAI or Pinecone, so it stays green during an outage.
+Never calls Gemini or Pinecone, so it stays green during an outage.
 
 ### `POST /api/calculate/<paye|cit|vat|wht>`
 
@@ -270,12 +293,14 @@ TaxWiz deploys as a standard Python service — no Docker, no extra infrastructu
 
    | Variable | Required | Notes |
    |---|---|---|
-   | `OPENAI_API_KEY` | yes | embeddings and generation |
+   | `GEMINI_API_KEY` | yes | embeddings and generation |
    | `PINECONE_API_KEY` | yes | vector search |
    | `PINECONE_INDEX` | yes | e.g. `taxwiz2` |
-   | `PINECONE_NAMESPACE` | yes | e.g. `wiztax` |
-   | `OPENAI_CHAT_MODEL` | no | default `gpt-4o-mini` |
-   | `OPENAI_EMBEDDING_MODEL` | no | default `text-embedding-3-small` |
+   | `PINECONE_NAMESPACE` | yes | e.g. `wiztax-gemini` |
+   | `GEMINI_CHAT_MODEL` | no | default `gemini-3.6-flash` |
+   | `GEMINI_THINKING_LEVEL` | no | `low`, `high`, or `off` |
+   | `GEMINI_EMBEDDING_MODEL` | no | default `gemini-embedding-001` |
+   | `EMBEDDING_DIMENSIONS` | no | default `1536`, must match the index |
    | `RAG_TOP_K`, `RAG_MIN_SCORE` | no | retrieval tuning |
 
    Do **not** set `PORT` — Railway provides it.
@@ -290,18 +315,25 @@ TaxWiz deploys as a standard Python service — no Docker, no extra infrastructu
 pytest
 ```
 
-60 tests covering the tax engine (worked examples verified by hand, band boundaries,
+69 tests covering the tax engine (worked examples verified by hand, band boundaries,
 input validation), the HTTP layer (routing, validation, the JSON error contract, no
 stack-trace leakage) and the RAG pipeline (score filtering, prompt construction, empty
 retrieval, upstream failure handling).
 
-`tests/test_rag.py` also contains a live check that the configured Pinecone index exists,
-has the right dimension and actually holds vectors. It is skipped automatically when
-`PINECONE_API_KEY` is not set.
+`tests/test_rag.py` also contains a live check that the configured Pinecone namespace
+exists, has the right dimension and actually holds vectors. It is skipped automatically
+when `PINECONE_API_KEY` is not set. If you point `PINECONE_NAMESPACE` at a namespace you
+have not built yet, this test fails on purpose and tells you to run `ingest.py`.
 
 ---
 
 ## Limitations
+
+- **The generation model is pinned one version back.** `gemini-3.6-flash`, not
+  `gemini-3.7-flash`. The newer model returns `503 UNAVAILABLE` under free-tier load, and
+  `gemini-flash-latest` resolves to it, so both proved unreliable. Switching is a
+  one-line `GEMINI_CHAT_MODEL` change — `rag.py` adapts the thinking directive to the
+  model generation and retries without it if the model rejects the newer form.
 
 - **The corpus is small.** The index holds a few hundred passages, mostly statutory
   definitions. Questions outside that material correctly return "no relevant information
@@ -315,7 +347,7 @@ has the right dimension and actually holds vectors. It is skipped automatically 
 - **No conversation memory.** Each question is answered independently.
 - **Retrieval quality depends on ingestion.** Answers can only be as good as the
   documents indexed by `ingest.py`.
-- **External dependencies.** Without valid OpenAI and Pinecone credentials the chat
+- **External dependencies.** Without valid Gemini and Pinecone credentials the chat
   assistant is unavailable; the calculator continues to work.
 
 ---
