@@ -31,8 +31,9 @@ def test_home_page_renders_the_ui(client):
 
     assert response.status_code == 200
     assert b"TaxWiz" in response.data
-    # The frontend must call the endpoints this app actually exposes.
-    assert b"/api/ask" in response.data
+    # The frontend must call the endpoints this app actually exposes: the chat
+    # goes through /api/chat, the calculator tab through /api/calculate.
+    assert b"/api/chat" in response.data
     assert b"/api/calculate/" in response.data
 
 

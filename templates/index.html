@@ -114,7 +114,7 @@
     .message-meta { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); padding: 0 4px; }
     .message-row.user .message-meta { flex-direction: row-reverse; }
     .sender-name { font-weight: 500; }
-    .bubble { padding: 13px 17px; border-radius: 16px; font-size: 14.5px; line-height: 1.65; word-break: break-word; }
+    .bubble { padding: 13px 17px; border-radius: 16px; font-size: 14.5px; line-height: 1.65; word-break: break-word; white-space: pre-line; }
     .bot .bubble { background: var(--bot-bg); color: var(--bot-text); border: 1px solid var(--border); border-top-left-radius: 4px; }
     .user .bubble { background: var(--user-bg); color: var(--user-text); border-top-right-radius: 4px; }
 
@@ -193,6 +193,11 @@
     .sources-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
     .source-item { font-size: 12px; color: var(--muted); background: rgba(255,255,255,.02); border: 1px solid var(--border); border-left: 2px solid var(--accent); border-radius: 8px; padding: 8px 11px; line-height: 1.5; }
     .source-item b { color: var(--accent); font-weight: 500; }
+    .chat-breakdown { margin-top: 8px; width: 100%; border-collapse: collapse; font-size: 13px; background: var(--surface2); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+    .chat-breakdown td { padding: 7px 12px; border-bottom: 1px solid var(--border); color: var(--bot-text); }
+    .chat-breakdown td:last-child { text-align: right; font-weight: 500; white-space: nowrap; }
+    .chat-breakdown tr:last-child td { border-bottom: none; }
+    .chat-notice { margin-top: 8px; font-size: 11.5px; color: var(--muted); line-height: 1.5; padding: 8px 11px; border-left: 2px solid var(--warning); background: rgba(243,156,18,.05); border-radius: 6px; }
 
     /* ── Responsive ── */
     @media (max-width: 900px) {
@@ -258,21 +263,21 @@
       <div class="chat-area" id="chatArea">
         <div class="welcome-card">
           <h2>Hello! I'm <span>TaxWiz</span> 👋</h2>
-          <p>Your intelligent assistant for Nigerian Tax Law. Ask me about tax definitions, rates, obligations, and more — grounded in the Nigerian Tax Act 2025.</p>
+          <p>Ask me about Nigerian tax law and I'll answer from the indexed Tax Act, with sources. Or ask me to calculate PAYE, company income tax, VAT or withholding tax — I'll ask for anything I need.</p>
           <div class="suggestions">
             <div class="suggestion-chip" onclick="sendSuggestion('What is income tax?')">What is income tax?</div>
-            <div class="suggestion-chip" onclick="sendSuggestion('What is VAT in Nigeria?')">What is VAT?</div>
             <div class="suggestion-chip" onclick="sendSuggestion('Who is required to pay tax in Nigeria?')">Who pays tax?</div>
-            <div class="suggestion-chip" onclick="sendSuggestion('What is the definition of taxable income?')">Taxable income</div>
+            <div class="suggestion-chip" onclick="sendSuggestion('I earn ₦500,000 monthly. Calculate my PAYE.')">PAYE on ₦500k/month</div>
+            <div class="suggestion-chip" onclick="sendSuggestion('Calculate VAT on ₦100,000')">VAT on ₦100,000</div>
           </div>
         </div>
       </div>
       <div class="input-area">
         <div class="input-wrapper">
-          <input type="text" class="chat-input" id="chatInput" placeholder="Ask a tax question..." autocomplete="off"/>
+          <input type="text" class="chat-input" id="chatInput" placeholder="Ask a tax question or request a calculation..." autocomplete="off"/>
           <button class="send-btn" id="sendBtn" onclick="sendMessage()">➤</button>
         </div>
-        <div class="input-hint">Answers are based on the Nigerian Tax Act 2025 · Not legal advice</div>
+        <div class="input-hint">Answers come from the indexed Tax Act · Calculations are estimates from built-in rates · Not legal or tax advice</div>
       </div>
     </div>
 
@@ -280,7 +285,7 @@
     <div class="view" id="view-calculator">
       <div class="calc-area">
         <div class="calc-title">Tax <span>Calculator</span></div>
-        <div class="calc-subtitle">Compute your Nigerian tax liability based on Tax Act 2025 rates</div>
+        <div class="calc-subtitle">Estimate Nigerian tax using TaxWiz's built-in rates. These have not been independently verified against current law.</div>
 
         <div class="calc-tabs">
           <div class="calc-tab active" onclick="switchTab('paye',this)">Personal Income (PAYE)</div>
@@ -520,12 +525,21 @@
             esc(s.score) + '<br>' + esc(s.excerpt) + '…</div>'
           ).join('') + '</div>';
       }
+      // Calculation rows arrive already formatted by the server; the browser
+      // only lays them out and never computes a figure itself.
+      let breakdownHtml = '';
+      if (opts.breakdown && opts.breakdown.length) {
+        breakdownHtml = '<table class="chat-breakdown">' +
+          opts.breakdown.map(r => '<tr><td>' + esc(r[0]) + '</td><td>' + esc(r[1]) + '</td></tr>').join('') +
+          '</table>';
+      }
+      const noticeHtml = opts.notice ? '<div class="chat-notice">' + esc(opts.notice) + '</div>' : '';
       row.innerHTML =
         '<div class="avatar ' + side + '">' + (side === 'user' ? '👤' : '⚖️') + '</div>' +
         '<div class="message-content">' +
           '<div class="message-meta"><span class="sender-name">' + esc(sender) + '</span><span>' + getTime() + '</span></div>' +
           '<div class="bubble' + (opts.error ? ' error' : '') + '">' + esc(text) + '</div>' +
-          sourcesHtml +
+          breakdownHtml + noticeHtml + sourcesHtml +
         '</div>';
       chatArea.appendChild(row);
       chatArea.scrollTop = chatArea.scrollHeight;
@@ -541,6 +555,10 @@
 
     function removeTyping() { const el = $('typingIndicator'); if (el) el.remove(); }
 
+    // An unfinished calculation ("monthly or yearly?") comes back from the
+    // server and is sent with the next message, so the server stays stateless.
+    let pending = null;
+
     async function sendMessage() {
       const text = chatInput.value.trim();
       if (!text) return;
@@ -549,9 +567,12 @@
       sendBtn.disabled = true;
       showTyping();
       try {
-        const data = await api('/api/ask', {question: text});
+        const data = await api('/api/chat', {message: text, pending: pending});
+        pending = data.pending || null;
         removeTyping();
-        appendMessage('TaxWiz', data.answer, 'bot', {sources: data.sources});
+        appendMessage('TaxWiz', data.reply, 'bot', {
+          sources: data.sources, breakdown: data.breakdown, notice: data.notice
+        });
       } catch (err) {
         removeTyping();
         appendMessage('TaxWiz', err.message, 'bot', {error: true});

@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.11-blue)
 ![Flask](https://img.shields.io/badge/Flask-3.1-lightgrey)
 ![Pinecone](https://img.shields.io/badge/Vector_DB-Pinecone-purple)
-![Tests](https://img.shields.io/badge/tests-92%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-180%20passing-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ---
@@ -25,10 +25,18 @@ TaxWiz is a small Flask application with two halves that deliberately stay separ
 The split matters: language models are unreliable at arithmetic and reliable at reading.
 TaxWiz uses each for what it is good at.
 
+Both halves are reachable from one chat box. A rule-based router (`chat.py`) decides
+whether each message is asking for a figure or for information. Figures go to the
+calculator and questions go to the Q&A pipeline. The router is not a language model, so
+whether to calculate, and with what numbers, is never decided by AI.
+
 ---
 
 ## Features
 
+- **One conversational assistant** — "I earn ₦500,000 monthly. Calculate my PAYE."
+  returns a calculated breakdown; "What is PAYE?" returns a sourced explanation. When a
+  calculation is missing a figure, TaxWiz asks for it rather than assuming one.
 - **Deterministic tax engine** — PAYE (graduated bands, CRA/pension/NHF reliefs, 1%
   minimum tax), CIT (turnover-banded 0/20/30%), VAT (7.5%, inclusive or exclusive) and
   WHT (5% / 10% by transaction type).
@@ -50,28 +58,69 @@ TaxWiz uses each for what it is good at.
 ## Architecture
 
 ```
-                        Browser (templates/index.html)
-                                    │
-                    ┌───────────────┴───────────────┐
+                     Browser (templates/index.html)
+                 chat box                    calculator tab
                     │                               │
-         POST /api/calculate/<type>          POST /api/ask
+             POST /api/chat                         │
                     │                               │
-                    ▼                               ▼
-              tax.py                              rag.py
-      ┌─────────────────────┐        ┌──────────────────────────────┐
-      │ fixed rate tables   │        │ 1. embed question (Gemini)   │
-      │ pure functions      │        │ 2. search Pinecone namespace │
-      │ no network, no LLM  │        │ 3. filter by similarity      │
-      └─────────────────────┘        │ 4. build cited prompt        │
-                    │                │ 5. generate answer (Gemini)  │
-                    │                └──────────────────────────────┘
-                    │                               │
-                    └───────────────┬───────────────┘
-                                    ▼
-                        JSON response → rendered in the UI
+                    ▼                               │
+     chat.py — rule-based router (no AI)            │
+     ├─ asks for a figure?   ── read figures ───────┼──► POST /api/calculate/<type>
+     │                          missing/unclear?    │              │
+     │                          → ask the user      │              ▼
+     │                                              └────────► tax.py
+     │                                                 fixed rate tables
+     │                                                 pure functions, no LLM
+     │
+     └─ asks for information?  ──────────────────────────► rag.py   (also POST /api/ask)
+                                                        1. embed question (Gemini)
+                                                        2. search Pinecone namespace
+                                                        3. filter by similarity
+                                                        4. build cited prompt
+                                                        5. generate answer (Gemini)
+                                                        6. keep only cited sources
 ```
 
 `ingest.py` populates the Pinecone index offline and is not part of the request path.
+
+### How the chat router decides
+
+`chat.py` applies these rules in order:
+
+1. **Explicit calculation verbs** — *calculate, compute, work out, estimate* — mean a
+   calculation.
+2. **Openers that make it a question** — *is, does, who, why, explain, what is the
+   difference* — mean information.
+3. ***How much*** together with an amount or *pay / owe / due / charged* means a calculation.
+4. **A tax followed by *on / for / of* and an amount or *my / this / a*** ("VAT on
+   ₦100,000", "tax on my profit") means a calculation.
+5. **An amount with none of the above** ("VAT ₦100,000") is unclear, so TaxWiz asks.
+6. **Anything else** is information.
+
+For a calculation, the tax is taken from its name (PAYE, CIT, VAT, WHT) or, failing
+that, from hints such as *earn* or *salary* (PAYE) and *business* or *turnover* (CIT).
+Two taxes at once, a bare "income tax", or no hint at all → TaxWiz asks which one.
+
+Figures are then read from the text: `₦500,000`, `N500,000`, `500k`, `1.5m`,
+`2 million naira`. Years ("Act 2025"), counts ("12 months"), percentages and section
+numbers are not read as money. Each amount is matched to the nearest keyword
+(*pension*, *turnover*, *profit*…). Wherever anything is missing or ambiguous, TaxWiz
+asks instead of guessing:
+
+| Tax | Must have | Asked for when missing |
+|---|---|---|
+| PAYE | gross income **and** whether it is monthly or yearly | yes — a wrong period is a 12× error |
+| CIT | annual turnover and assessable profit | yes; monthly figures are also queried |
+| VAT | transaction amount | yes; if the message doesn't say, VAT is added on top, and the reply says so |
+| WHT | payment amount and payment type | yes |
+
+The only arithmetic in `chat.py` is converting a monthly income to yearly (×12), and the
+reply states it. Every figure comes from `tax.py`, which also does all input validation.
+
+An unfinished calculation is returned to the browser as a `pending` object, and the
+browser sends it back with the next message. That keeps the server stateless across
+gunicorn workers. Because `pending` comes from the client, it is re-validated on every
+request.
 
 ---
 
@@ -94,6 +143,7 @@ TaxWiz uses each for what it is good at.
 ```
 TaxWiz/
 ├── app.py                  # Flask app: routes, validation, JSON error contract
+├── chat.py                 # Chat router: calculation vs question, figure extraction
 ├── tax.py                  # Deterministic tax calculations (no I/O, no LLM)
 ├── rag.py                  # Embedding → Pinecone retrieval → prompt → LLM
 ├── ingest.py               # Offline: chunk + embed documents into Pinecone
@@ -102,7 +152,8 @@ TaxWiz/
 │   ├── conftest.py
 │   ├── test_tax.py         # Worked examples and input validation
 │   ├── test_api.py         # HTTP routing, validation, error contract
-│   └── test_rag.py         # Pipeline behaviour + live Pinecone check
+│   ├── test_chat.py        # Chat routing, extraction, clarification, no-AI-arithmetic
+│   └── test_rag.py         # Pipeline behaviour + live Pinecone checks
 ├── requirements.txt        # Runtime dependencies
 ├── requirements-dev.txt    # + pytest
 ├── Procfile                # Railway start command
@@ -228,6 +279,33 @@ Two details `ingest.py` and `rag.py` keep in sync, and which must not drift apar
 
 Never calls Gemini or Pinecone, so it stays green during an outage.
 
+### `POST /api/chat`
+
+The conversational endpoint the chat box uses. Send the message, plus the `pending`
+object from the previous reply if there was one.
+
+```bash
+curl -X POST http://127.0.0.1:5000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "I earn ₦500,000 monthly. Calculate my PAYE."}'
+```
+
+Every reply has a `type`, a `reply` text and a `pending` field:
+
+| `type` | Meaning | Extra fields |
+|---|---|---|
+| `calculation` | Computed by `tax.py` | `tax_type`, `breakdown` (label/value rows), `notice`, `calculation` (raw `tax.py` result) |
+| `clarification` | Something is missing or unclear | `pending` — send it back with the next message |
+| `answer` | From the Q&A pipeline | `sources`, `grounded` — as `/api/ask` |
+
+```json
+{
+  "type": "clarification",
+  "reply": "Is ₦500,000.00 your monthly or your yearly income?",
+  "pending": {"tax_type": "paye", "slots": {"gross_amount": 500000.0}}
+}
+```
+
 ### `POST /api/calculate/<paye|cit|vat|wht>`
 
 ```bash
@@ -336,10 +414,19 @@ TaxWiz deploys as a standard Python service — no Docker, no extra infrastructu
 pytest
 ```
 
-92 tests covering the tax engine (worked examples verified by hand, band boundaries,
+180 tests covering the tax engine (worked examples verified by hand, band boundaries,
 input validation), the HTTP layer (routing, validation, the JSON error contract, no
-stack-trace leakage) and the RAG pipeline (score filtering, prompt construction, citation
-parsing and the no-citation rule, bounded retries, unreadable-passage detection).
+stack-trace leakage), the RAG pipeline (score filtering, prompt construction, citation
+parsing and the no-citation rule, bounded retries, unreadable-passage detection) and the
+chat router (`tests/test_chat.py`).
+
+The chat tests run every calculation with Gemini and Pinecone replaced by functions that
+**fail the test if called**, and with `tax.calculate` wrapped in a spy. They therefore
+prove the figure came from `tax.py` and that no AI was involved, not merely that the
+number is right. This was checked by deliberately breaking the code. Routing every message
+to Gemini failed 43 tests. Computing VAT inline instead of via `tax.py` failed 10 —
+although that copy produced the *correct* VAT, because it skipped `tax.py`'s validation
+and calculated tax on ₦0.
 
 `tests/test_rag.py` also contains two live checks, skipped automatically when
 `PINECONE_API_KEY` is not set:
@@ -366,6 +453,13 @@ far been checked only by hand on a handful of questions.
   definitions; the tables were lost to unreadable extraction (see "Unreadable passages").
   Questions outside that material correctly return "no relevant information was found"
   rather than an answer — including some the calculator covers, such as the VAT rate.
+- **The chat router understands phrasing it was written for.** It is a set of rules, not
+  a language model, so unusual phrasings can be misrouted. The design favours safe
+  failures: a calculation request the rules don't recognise goes to the Q&A pipeline,
+  which cannot do arithmetic and answers only from cited passages; an unclear amount
+  produces a question. It handles one tax per message, monthly or yearly income only
+  (not weekly or daily), and English only. It does not read amounts written in words
+  ("five hundred thousand").
 - **The similarity threshold is not calibrated.** `RAG_MIN_SCORE=0.25` was chosen without
   data. With Gemini embeddings, off-topic questions still score around 0.59, so the
   threshold rarely filters anything; the no-citation rule is doing that work instead.

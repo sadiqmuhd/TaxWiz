@@ -4,6 +4,9 @@ Two things live behind this API:
   * a deterministic tax calculator (tax.py), and
   * a retrieval-augmented Q&A pipeline over Nigerian tax law (rag.py).
 
+/api/chat (chat.py) is the single conversational entry point that routes each
+message to one or the other; /api/ask and /api/calculate remain available.
+
 Run locally with `python app.py`; in production Railway starts it with
 gunicorn (see Procfile).
 """
@@ -14,6 +17,7 @@ import sys
 
 from flask import Flask, jsonify, render_template, request
 
+import chat
 import rag
 import tax
 
@@ -67,6 +71,32 @@ def ask():
     except Exception:
         logger.exception("Unexpected failure answering question")
         return error("Internal error", "Something went wrong answering that question.", 500)
+
+    return jsonify(result)
+
+
+@app.post("/api/chat")
+def chat_message():
+    """One conversational turn: a calculation, a clarifying question or an answer.
+
+    Body: {"message": str, "pending": <object from the previous reply, optional>}
+    """
+    payload = request.get_json(silent=True) or {}
+    message = payload.get("message")
+
+    if not isinstance(message, str) or not message.strip():
+        return error("Invalid request", "Field 'message' is required.", 400)
+
+    try:
+        result = chat.respond(message, payload.get("pending"))
+    except ValueError as exc:
+        return error("Invalid request", str(exc), 400)
+    except rag.RagError as exc:
+        logger.warning("RAG failure: %s", exc.message)
+        return error("Service unavailable", exc.message, exc.status_code)
+    except Exception:
+        logger.exception("Unexpected failure handling chat message")
+        return error("Internal error", "Something went wrong handling that message.", 500)
 
     return jsonify(result)
 
