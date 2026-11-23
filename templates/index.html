@@ -266,7 +266,7 @@
           <p>Ask me about Nigerian tax law and I'll answer from the indexed Tax Act, with sources. Or ask me to calculate PAYE, company income tax, VAT or withholding tax — I'll ask for anything I need.</p>
           <div class="suggestions">
             <div class="suggestion-chip" onclick="sendSuggestion('What is income tax?')">What is income tax?</div>
-            <div class="suggestion-chip" onclick="sendSuggestion('Who is required to pay tax in Nigeria?')">Who pays tax?</div>
+            <div class="suggestion-chip" onclick="sendSuggestion('Who counts as a person under the Act?')">Who is a "person"?</div>
             <div class="suggestion-chip" onclick="sendSuggestion('I earn ₦500,000 monthly. Calculate my PAYE.')">PAYE on ₦500k/month</div>
             <div class="suggestion-chip" onclick="sendSuggestion('Calculate VAT on ₦100,000')">VAT on ₦100,000</div>
           </div>
@@ -297,7 +297,7 @@
         <!-- PAYE -->
         <div class="calc-panel active" id="panel-paye">
           <div class="info-box">
-            <strong>Personal Income Tax (PAYE)</strong> uses a graduated rate: 7% on the first ₦300k, rising to 24% above ₦3.2M annually. A minimum tax of <strong>1% of gross income</strong> applies where computed tax is lower.
+            <strong>Personal Income Tax (PAYE)</strong> under the Nigeria Tax Act 2025: the first <strong>₦800,000</strong> of chargeable income is taxed at <strong>0%</strong>, rising in bands to <strong>25%</strong> above ₦50M. Pension, NHF and rent relief (20% of rent, up to ₦500,000) are deducted first.
           </div>
           <div class="calc-grid">
             <div>
@@ -313,6 +313,10 @@
                 <label class="form-label">National Housing Fund — NHF (₦)</label>
                 <input type="number" class="form-input" id="paye-nhf" placeholder="e.g. 30000" min="0"/>
               </div>
+              <div class="form-group">
+                <label class="form-label">Annual Rent Paid (₦)</label>
+                <input type="number" class="form-input" id="paye-rent" placeholder="e.g. 1500000" min="0"/>
+              </div>
               <button class="calc-btn" id="paye-btn" onclick="calcPAYE()">Calculate PAYE Tax</button>
               <div class="form-error" id="paye-error"></div>
             </div>
@@ -320,10 +324,9 @@
             <div class="result-card" id="paye-result">
               <div class="result-header">📊 PAYE Breakdown</div>
               <div class="result-row"><span class="label">Gross Annual Income</span><span class="value" id="r-paye-gross">—</span></div>
-              <div class="result-row"><span class="label">Total Reliefs & Deductions</span><span class="value" id="r-paye-relief">—</span></div>
-              <div class="result-row"><span class="label">Taxable Income</span><span class="value" id="r-paye-taxable">—</span></div>
-              <div class="result-row"><span class="label">Computed Tax</span><span class="value" id="r-paye-computed">—</span></div>
-              <div class="result-row"><span class="label">Minimum Tax (1%)</span><span class="value" id="r-paye-min">—</span></div>
+              <div class="result-row"><span class="label">Rent Relief</span><span class="value" id="r-paye-rent">—</span></div>
+              <div class="result-row"><span class="label">Eligible Deductions</span><span class="value" id="r-paye-relief">—</span></div>
+              <div class="result-row"><span class="label">Chargeable Income</span><span class="value" id="r-paye-taxable">—</span></div>
               <div class="result-row total"><span class="label">Annual Tax Payable</span><span class="value" id="r-paye-annual">—</span></div>
               <div class="result-row highlight"><span class="label">Monthly PAYE Deduction</span><span class="value" id="r-paye-monthly">—</span></div>
               <div class="result-row"><span class="label">Effective Tax Rate</span><span class="value" id="r-paye-rate">—</span></div>
@@ -331,7 +334,7 @@
                 <thead><tr><th>Income Band</th><th>Rate</th><th>Tax</th></tr></thead>
                 <tbody id="paye-bands-body"></tbody>
               </table>
-              <div class="result-note">⚠️ Estimate based on standard reliefs. Actual PAYE may vary with additional allowances and employer arrangements.</div>
+              <div class="result-note">⚠️ Estimate under the Nigeria Tax Act 2025. Employees earning the national minimum wage or less are exempt (s. 58); this is not applied automatically. NHIS, mortgage interest and life assurance deductions are available through the API.</div>
             </div>
           </div>
         </div>
@@ -339,13 +342,17 @@
         <!-- CIT -->
         <div class="calc-panel" id="panel-cit">
           <div class="info-box">
-            <strong>Company Income Tax (CIT):</strong> Small companies (≤ ₦25M turnover): <strong>0%</strong>. Medium (₦25M–₦100M): <strong>20%</strong>. Large (&gt; ₦100M): <strong>30%</strong> of taxable profit.
+            <strong>Company Income Tax (CIT)</strong> under the Nigeria Tax Act 2025: small companies (turnover ≤ ₦100M <em>and</em> fixed assets ≤ ₦250M) pay <strong>0%</strong>. Other companies pay <strong>30%</strong> of taxable profit plus a <strong>4% development levy</strong> on assessable profit.
           </div>
           <div class="calc-grid">
             <div>
               <div class="form-group">
                 <label class="form-label">Annual Turnover (₦)</label>
                 <input type="number" class="form-input" id="cit-turnover" placeholder="e.g. 50000000" min="0"/>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Total Fixed Assets (₦) — needed if turnover ≤ ₦100M</label>
+                <input type="number" class="form-input" id="cit-assets" placeholder="e.g. 30000000" min="0"/>
               </div>
               <div class="form-group">
                 <label class="form-label">Assessable Profit (₦)</label>
@@ -362,13 +369,16 @@
             <div class="result-card" id="cit-result">
               <div class="result-header">📊 CIT Breakdown</div>
               <div class="result-row"><span class="label">Annual Turnover</span><span class="value" id="r-cit-turnover">—</span></div>
+              <div class="result-row"><span class="label">Total Fixed Assets</span><span class="value" id="r-cit-assets">—</span></div>
               <div class="result-row"><span class="label">Company Category</span><span class="value" id="r-cit-category">—</span></div>
               <div class="result-row"><span class="label">CIT Rate</span><span class="value" id="r-cit-rate">—</span></div>
               <div class="result-row"><span class="label">Assessable Profit</span><span class="value" id="r-cit-profit">—</span></div>
               <div class="result-row"><span class="label">Capital Allowances</span><span class="value" id="r-cit-allowances">—</span></div>
               <div class="result-row"><span class="label">Taxable Profit</span><span class="value" id="r-cit-taxable">—</span></div>
-              <div class="result-row total"><span class="label">CIT Payable</span><span class="value" id="r-cit-tax">—</span></div>
-              <div class="result-note">⚠️ Education tax (3% of assessable profit) and other levies may apply separately.</div>
+              <div class="result-row"><span class="label">CIT Payable</span><span class="value" id="r-cit-tax">—</span></div>
+              <div class="result-row"><span class="label">Development Levy</span><span class="value" id="r-cit-levy">—</span></div>
+              <div class="result-row total"><span class="label">Total Payable</span><span class="value" id="r-cit-total">—</span></div>
+              <div class="result-note" id="r-cit-note">⚠️ Assumes a Nigerian-resident company. The 25% rate applies only once set by presidential order (s. 56).</div>
             </div>
           </div>
         </div>
@@ -625,13 +635,13 @@
       runCalc('paye', {
         gross_income: num('paye-income'),
         pension: num('paye-pension'),
-        nhf: num('paye-nhf')
+        nhf: num('paye-nhf'),
+        annual_rent: num('paye-rent')
       }, r => {
         $('r-paye-gross').textContent    = fmt(r.gross_income);
-        $('r-paye-relief').textContent   = fmt(r.total_relief);
-        $('r-paye-taxable').textContent  = fmt(r.taxable_income);
-        $('r-paye-computed').textContent = fmt(r.computed_tax);
-        $('r-paye-min').textContent      = fmt(r.minimum_tax) + (r.minimum_tax_applied ? ' (applied)' : '');
+        $('r-paye-rent').textContent     = fmt(r.rent_relief);
+        $('r-paye-relief').textContent   = fmt(r.eligible_deductions);
+        $('r-paye-taxable').textContent  = fmt(r.chargeable_income);
         $('r-paye-annual').textContent   = fmt(r.annual_tax);
         $('r-paye-monthly').textContent  = fmt(r.monthly_tax);
         $('r-paye-rate').textContent     = pct(r.effective_rate);
@@ -647,15 +657,21 @@
       runCalc('cit', {
         turnover: num('cit-turnover'),
         assessable_profit: num('cit-profit'),
-        capital_allowances: num('cit-allowances')
+        capital_allowances: num('cit-allowances'),
+        fixed_assets: num('cit-assets')
       }, r => {
         $('r-cit-turnover').textContent   = fmt(r.turnover);
+        $('r-cit-assets').textContent     = r.fixed_assets === null ? '—' : fmt(r.fixed_assets);
         $('r-cit-category').textContent   = r.category;
         $('r-cit-rate').textContent       = pct(r.rate);
         $('r-cit-profit').textContent     = fmt(r.assessable_profit);
         $('r-cit-allowances').textContent = fmt(r.capital_allowances);
         $('r-cit-taxable').textContent    = fmt(r.taxable_profit);
         $('r-cit-tax').textContent        = fmt(r.tax_payable);
+        $('r-cit-levy').textContent       = fmt(r.development_levy) + ' (' + pct(r.development_levy_rate) + ')';
+        $('r-cit-total').textContent      = fmt(r.total_payable);
+        $('r-cit-note').textContent = '⚠️ Assumes a Nigerian-resident company. The 25% rate applies only once set by presidential order (s. 56).' +
+          (r.minimum_etr_may_apply ? ' With turnover of ₦50bn or more, the 15% minimum effective tax rate (s. 57) may also apply; it is not computed here.' : '');
       });
     }
 

@@ -40,6 +40,8 @@ TAX_NAMES = {
 
 # Figures each calculator cannot run without. PAYE needs to know whether the
 # income figure is monthly or yearly: guessing wrong is a twelve-fold error.
+# CIT additionally needs fixed assets when turnover alone cannot decide whether
+# the company is small (see _missing).
 REQUIRED_SLOTS = {
     "paye": ("gross_amount", "gross_period"),
     "cit": ("turnover", "assessable_profit"),
@@ -47,13 +49,27 @@ REQUIRED_SLOTS = {
     "wht": ("amount", "transaction_type"),
 }
 NUMERIC_SLOTS = {
-    "paye": ("gross_amount", "pension_amount", "nhf_amount"),
-    "cit": ("turnover", "assessable_profit", "capital_allowances"),
+    "paye": ("gross_amount", "pension_amount", "nhf_amount", "nhis_amount", "rent_amount"),
+    "cit": ("turnover", "assessable_profit", "capital_allowances", "fixed_assets"),
     "vat": ("amount",),
     "wht": ("amount",),
 }
-PERIOD_SLOTS = ("gross_period", "pension_period", "nhf_period")
+PERIOD_SLOTS = ("gross_period", "pension_period", "nhf_period", "nhis_period", "rent_period")
 PERIODS = ("monthly", "annual")
+
+# PAYE deductions the chat understands: slot prefix -> (tax.py field, wording).
+# Mortgage interest and life assurance are accepted by tax.py and the API, but
+# not read from chat messages.
+CHAT_DEDUCTIONS = {
+    "pension": ("pension", "pension contribution"),
+    "nhf": ("nhf", "NHF contribution"),
+    "nhis": ("nhis", "NHIS contribution"),
+    "rent": ("annual_rent", "rent"),
+}
+
+# The minimum-wage exemption (s. 58) cannot be applied — the Act does not state
+# the wage — so below this income the reply mentions it. Display only.
+MIN_WAGE_NOTE_BELOW = 1_500_000
 
 
 # ── Patterns ───────────────────────────────────────────────────────────────────
@@ -117,12 +133,15 @@ ANNUAL = re.compile(r"\b(annual(?:ly)?|yearly|per year|a year|each year|every ye
 PAYE_LABELS = {
     "pension": re.compile(r"\bpension\w*|\brsa\b|\bretirement savings?\b", FLAGS),
     "nhf": re.compile(r"\bnhf\b|\bhousing fund\b|\bnational housing\b", FLAGS),
+    "nhis": re.compile(r"\bnhis\b|\bhealth insurance\b", FLAGS),
+    "rent": re.compile(r"\brent(?:s|al)?\b", FLAGS),
     "gross": re.compile(r"\b(earn\w*|salar\w*|wages?|income|gross)\b", FLAGS),
 }
 CIT_LABELS = {
     "turnover": re.compile(r"\b(turnover|revenue|sales|gross receipts)\b", FLAGS),
     "assessable_profit": re.compile(r"\b(assessable profits?|profits?)\b", FLAGS),
     "capital_allowances": re.compile(r"\bcapital allowances?\b|\ballowances?\b", FLAGS),
+    "fixed_assets": re.compile(r"\b(?:fixed|total) assets?\b|\bassets?\b", FLAGS),
 }
 VAT_INCLUSIVE = re.compile(r"\b(inclusive|including vat|includes vat|incl\.? vat|"
                            r"vat[- ]inclusive|vat included|already includes)\b", FLAGS)
@@ -255,8 +274,7 @@ def extract_slots(tax_type: str, text: str, masked: str, amounts,
     problems: List[str] = []
 
     def missing_amount_slots():
-        return [s for s in REQUIRED_SLOTS[tax_type]
-                if s in NUMERIC_SLOTS[tax_type] and s not in known]
+        return [s for s in _missing(tax_type, known) if s in NUMERIC_SLOTS[tax_type]]
 
     if tax_type == "paye":
         if NET_PAY.search(masked) and amounts:
@@ -266,11 +284,11 @@ def extract_slots(tax_type: str, text: str, masked: str, amounts,
         labels = _attach(masked, PAYE_LABELS, amounts)
         periods = _attach(masked, {"monthly": MONTHLY, "annual": ANNUAL}, amounts)
         gross = [i for i in range(len(amounts)) if labels.get(i) in (None, "gross")]
-        for field in ("pension", "nhf"):
+        for field, (_, name) in CHAT_DEDUCTIONS.items():
             hits = [i for i, label in labels.items() if label == field]
             if len(hits) > 1:
                 problems.append("I found more than one %s figure. Which one should I use?"
-                                % ("pension" if field == "pension" else "NHF"))
+                                % name)
             elif hits:
                 slots["%s_amount" % field] = amounts[hits[0]]["value"]
                 if hits[0] in periods:
@@ -341,7 +359,13 @@ def extract_slots(tax_type: str, text: str, masked: str, amounts,
 
 
 def _missing(tax_type: str, slots: Dict[str, Any]) -> List[str]:
-    return [s for s in REQUIRED_SLOTS[tax_type] if s not in slots]
+    missing = [s for s in REQUIRED_SLOTS[tax_type] if s not in slots]
+    # A company with turnover of N100m or less is small only if its fixed assets
+    # are also within the limit, so that figure becomes necessary.
+    if (tax_type == "cit" and "fixed_assets" not in slots
+            and slots.get("turnover", float("inf")) <= tax.SMALL_COMPANY_TURNOVER):
+        missing.append("fixed_assets")
+    return missing
 
 
 def _ask_for(tax_type: str, slots: Dict[str, Any]) -> str:
@@ -351,13 +375,21 @@ def _ask_for(tax_type: str, slots: Dict[str, Any]) -> str:
         if "gross_amount" in missing:
             return ("To estimate your PAYE I need your gross income, and whether it's monthly "
                     "or yearly — for example \"₦500,000 monthly\" or \"₦6,000,000 a year\". "
-                    "You can include pension and NHF contributions too.")
+                    "You can include pension, NHF, NHIS and rent paid too.")
         return "Is %s your monthly or your yearly income?" % naira(slots["gross_amount"])
     if tax_type == "cit":
-        wanted = " and ".join({"turnover": "annual turnover",
-                               "assessable_profit": "assessable profit"}[s] for s in missing)
+        words = {"turnover": "annual turnover", "assessable_profit": "assessable profit",
+                 "fixed_assets": "total fixed assets"}
+        wanted = [words[s] for s in missing]
+        wanted_text = (wanted[0] if len(wanted) == 1
+                       else ", ".join(wanted[:-1]) + " and " + wanted[-1])
+        if missing == ["fixed_assets"]:
+            return ("With turnover of %s or less, a company counts as small only if its fixed "
+                    "assets are %s or less. What are its total fixed assets?"
+                    % (naira(tax.SMALL_COMPANY_TURNOVER), naira(tax.SMALL_COMPANY_FIXED_ASSETS)))
         return ("To estimate company income tax I need your %s (capital allowances are "
-                "optional) — for example \"turnover ₦50m, profit ₦12m\"." % wanted)
+                "optional) — for example \"turnover ₦50m, fixed assets ₦30m, profit ₦12m\"."
+                % wanted_text)
     if tax_type == "vat":
         return ("What is the transaction amount? Tell me too if it already includes VAT — "
                 "otherwise I'll add VAT on top.")
@@ -389,10 +421,10 @@ def calculate(tax_type: str, slots: Dict[str, Any], saw_percent: bool) -> Dict[s
         if period == "monthly":
             notes.append("I annualised your income: %s × 12 = %s."
                          % (naira(slots["gross_amount"]), naira(payload["gross_income"])))
-        for field, name in (("pension", "pension contribution"), ("nhf", "NHF contribution")):
+        for field, (key, name) in CHAT_DEDUCTIONS.items():
             if "%s_amount" % field in slots:
                 own = slots.get("%s_period" % field)
-                payload[field] = _annual(slots["%s_amount" % field], own or period)
+                payload[key] = _annual(slots["%s_amount" % field], own or period)
                 if not own and period == "monthly":
                     notes.append("I treated your %s as monthly, like your income." % name)
     elif tax_type == "cit":
@@ -415,31 +447,53 @@ def calculate(tax_type: str, slots: Dict[str, Any], saw_percent: bool) -> Dict[s
 def describe(tax_type: str, r: Dict[str, Any], notes: List[str]) -> Tuple[str, List[List[str]]]:
     """Turn a tax.py result into words and table rows. No arithmetic here."""
     if tax_type == "paye":
-        if r["minimum_tax_applied"]:
-            notes.append("Your reliefs bring the band calculation below 1% of gross income, "
-                         "so the 1% minimum tax applies.")
+        if r["gross_income"] <= MIN_WAGE_NOTE_BELOW:
+            notes.append("If you earn the national minimum wage or less, your employment "
+                         "income is exempt (Nigeria Tax Act 2025, s. 58). I haven't applied "
+                         "that, because the Act doesn't state the wage amount.")
         reply = ("Estimated PAYE: %s a year, about %s a month (effective rate %s%%)."
                  % (naira(r["annual_tax"]), naira(r["monthly_tax"]), r["effective_rate"]))
         rows = [["Gross annual income", naira(r["gross_income"])]]
-        if r["pension"]:
-            rows.append(["Pension contribution", naira(r["pension"])])
-        if r["nhf"]:
-            rows.append(["NHF contribution", naira(r["nhf"])])
-        rows += [["Total reliefs", naira(r["total_relief"])],
-                 ["Taxable income", naira(r["taxable_income"])]]
+        for key, label in tax.DEDUCTIONS:
+            if r[key]:
+                rows.append([label, naira(r[key])])
+        if r["annual_rent"]:
+            rows.append(["Rent relief (20%% of %s rent, max %s)"
+                         % (naira(r["annual_rent"]), naira(tax.RENT_RELIEF_CAP)),
+                         naira(r["rent_relief"])])
+        rows += [["Eligible deductions", naira(r["eligible_deductions"])],
+                 ["Chargeable income", naira(r["chargeable_income"])]]
         rows += [["%s at %g%%" % (b["label"], b["rate"]), naira(b["tax"])]
                  for b in r["bands"] if b["applied"]]
-        rows += [["Minimum tax (1% of gross)", naira(r["minimum_tax"])],
-                 ["Annual PAYE", naira(r["annual_tax"])],
+        rows += [["Annual PAYE", naira(r["annual_tax"])],
                  ["Monthly PAYE", naira(r["monthly_tax"])]]
     elif tax_type == "cit":
-        reply = ("Estimated company income tax: %s (%s, %g%% rate)."
-                 % (naira(r["tax_payable"]), r["category"], r["rate"]))
-        rows = [["Annual turnover", naira(r["turnover"])], ["Category", r["category"]],
-                ["Assessable profit", naira(r["assessable_profit"])],
-                ["Capital allowances", naira(r["capital_allowances"])],
-                ["Taxable profit", naira(r["taxable_profit"])],
-                ["Rate", "%g%%" % r["rate"]], ["CIT payable", naira(r["tax_payable"])]]
+        if r["is_small_company"]:
+            reply = ("This is a small company (turnover %s or less and fixed assets %s or less), "
+                     "so it pays no company income tax and no development levy."
+                     % (naira(tax.SMALL_COMPANY_TURNOVER), naira(tax.SMALL_COMPANY_FIXED_ASSETS)))
+        else:
+            reply = ("Estimated company income tax: %s (%g%% of taxable profit), plus a "
+                     "development levy of %s (%g%% of assessable profit) — %s in total."
+                     % (naira(r["tax_payable"]), r["rate"], naira(r["development_levy"]),
+                        r["development_levy_rate"], naira(r["total_payable"])))
+            notes.append("This assumes a Nigerian-resident company; non-resident companies "
+                         "don't pay the development levy.")
+        if r["minimum_etr_may_apply"]:
+            notes.append("With turnover of ₦50 billion or more, the 15% minimum effective tax "
+                         "rate (s. 57) may also apply. It is worked out from audited accounts, "
+                         "so it isn't included here.")
+        rows = [["Annual turnover", naira(r["turnover"])]]
+        if r["fixed_assets"] is not None:
+            rows.append(["Total fixed assets", naira(r["fixed_assets"])])
+        rows += [["Category", r["category"]],
+                 ["Assessable profit", naira(r["assessable_profit"])],
+                 ["Capital allowances", naira(r["capital_allowances"])],
+                 ["Taxable profit", naira(r["taxable_profit"])],
+                 ["CIT (%g%%)" % r["rate"], naira(r["tax_payable"])],
+                 ["Development levy (%g%%)" % r["development_levy_rate"],
+                  naira(r["development_levy"])],
+                 ["Total payable", naira(r["total_payable"])]]
     elif tax_type == "vat":
         if r["mode"] == "inclusive":
             reply = ("%s already includes %s of VAT at %g%%; the amount before VAT is %s."
@@ -543,10 +597,57 @@ def _plain(message: str) -> str:
     words = {"'gross_income'": "Gross income", "'amount'": "The amount",
              "'turnover'": "Turnover", "'assessable_profit'": "Assessable profit",
              "'capital_allowances'": "Capital allowances", "'pension'": "Pension",
+             "'fixed_assets'": "Fixed assets", "'annual_rent'": "Rent", "'nhis'": "NHIS",
              "'nhf'": "NHF"}
     for field, word in words.items():
         message = message.replace(field, word)
     return message
+
+
+EXAMPLES = {
+    "paye": "Calculate PAYE on ₦500,000 monthly",
+    "cit": "Calculate CIT: turnover ₦500m, profit ₦12m",
+    "vat": "Calculate VAT on ₦100,000",
+    "wht": "Calculate WHT on a ₦1m consultancy fee",
+}
+
+
+def _rate_summary(tax_type: str) -> str:
+    """Describe the calculator's built-in rates, read from tax.py, never restated."""
+    if tax_type == "vat":
+        return "VAT at %g%%" % (tax.VAT_RATE * 100)
+    if tax_type == "paye":
+        rates = [rate * 100 for _, rate, _ in tax.PAYE_BANDS]
+        return "PAYE on graduated bands from %g%% to %g%%" % (min(rates), max(rates))
+    if tax_type == "cit":
+        return ("company income tax at %g%% for small companies and %g%% otherwise, plus a "
+                "%g%% development levy on companies that are not small"
+                % (tax.CIT_SMALL_RATE * 100, tax.CIT_RATE * 100,
+                   tax.DEVELOPMENT_LEVY_RATE * 100))
+    rates = sorted({v["rate"] * 100 for v in tax.WHT_RATES.values()})
+    return ("withholding tax at %s depending on the payment type"
+            % " or ".join("%g%%" % r for r in rates))
+
+
+def no_source_offer(types: set) -> str:
+    """Reply for a question about a tax that the indexed passages don't cover.
+
+    The corpus is the Act's definitions section, so "What is VAT?" finds nothing
+    to cite. Answering from the model's memory would defeat the grounding rule,
+    so instead say plainly what is missing and offer the calculator, describing
+    its rates as built-in estimates rather than as statements of law.
+    """
+    ordered = [t for t in ("paye", "cit", "vat", "wht") if t in types]
+    names = " or ".join(TAX_NAMES[t] for t in ordered)
+    them = "it" if len(ordered) == 1 else "them"
+    return (
+        "The tax law passages I search don't explain %s, so I can't answer that with a "
+        "source — and I won't answer from memory.\n\n"
+        "I can calculate %s for you, though. The calculator uses built-in rates: %s. "
+        "These are estimates and have not been independently verified against current law."
+        "\n\nTry: \"%s\""
+        % (names, them, "; ".join(_rate_summary(t) for t in ordered), EXAMPLES[ordered[0]])
+    )
 
 
 def _fresh(text: str) -> Dict[str, Any]:
@@ -556,7 +657,11 @@ def _fresh(text: str) -> Dict[str, Any]:
 
     if intent == "inform":
         result = rag.answer_question(text)
-        return {"type": "answer", "reply": result["answer"], "sources": result["sources"],
+        reply = result["answer"]
+        named = types | ({"paye", "cit"} if generic else set())
+        if not result["grounded"] and named:
+            reply = no_source_offer(named)
+        return {"type": "answer", "reply": reply, "sources": result["sources"],
                 "grounded": result["grounded"], "pending": None}
 
     if intent == "unclear":

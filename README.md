@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.11-blue)
 ![Flask](https://img.shields.io/badge/Flask-3.1-lightgrey)
 ![Pinecone](https://img.shields.io/badge/Vector_DB-Pinecone-purple)
-![Tests](https://img.shields.io/badge/tests-180%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-210%20passing-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ---
@@ -37,8 +37,9 @@ whether to calculate, and with what numbers, is never decided by AI.
 - **One conversational assistant** — "I earn ₦500,000 monthly. Calculate my PAYE."
   returns a calculated breakdown; "What is PAYE?" returns a sourced explanation. When a
   calculation is missing a figure, TaxWiz asks for it rather than assuming one.
-- **Deterministic tax engine** — PAYE (graduated bands, CRA/pension/NHF reliefs, 1%
-  minimum tax), CIT (turnover-banded 0/20/30%), VAT (7.5%, inclusive or exclusive) and
+- **Deterministic tax engine, written from the Nigeria Tax Act 2025** — PAYE (Fourth
+  Schedule bands 0–25%; s. 30 deductions including rent relief), CIT (0% for small
+  companies, 30% otherwise, plus the 4% development levy), VAT (7.5%, inclusive or exclusive) and
   WHT (5% / 10% by transaction type).
 - **Grounded Q&A** — retrieval-augmented answers with numbered citations. The source
   panel shows only the passages the answer actually cites, with their similarity scores.
@@ -234,6 +235,28 @@ python ingest.py --from-namespace wiztax
 That reads every passage out of the `wiztax` namespace and writes freshly embedded
 copies into whatever `PINECONE_NAMESPACE` currently points at.
 
+### The full Act: `nta2025-gemini`
+
+The `nta2025-gemini` namespace holds the full **Nigeria Tax Act, 2025** (Act No. 7,
+Official Gazette No. 117, Vol. 112), downloaded from the National Assembly:
+<https://nass.gov.ng/documents/download/11249>. The PDF identifies itself as "NIGERIA TAX
+ACT 2025 (Edited 1-1-2026)". It has 215 pages, all with extractable text and none of it
+reversed. It is not redistributed in this repository. To rebuild the namespace:
+
+```bash
+# 1. save the PDF as data/Nigeria-Tax-Act-2025.pdf, then
+PINECONE_NAMESPACE=nta2025-gemini python ingest.py --source data
+# 2. add the one-definition-per-passage set, copied without re-embedding
+PINECONE_NAMESPACE=nta2025-gemini python ingest.py --copy-from wiztax-gemini
+```
+
+Step 2 matters. The Act is chunked into 1,200-character windows, so each definition
+shares a passage with a dozen others, and definition questions retrieved the wrong term.
+With both sets in one namespace, every test question retrieved a relevant passage in the
+top five: VAT, VAT liability, deduction at source, PAYE and CIT rates, and three
+definitions. The result is 668 passages (441 from the Act plus 227 definitions).
+`--copy-from` is only valid between namespaces built with the same embedding model.
+
 ### Unreadable passages
 
 Some PDF table layouts come out of text extraction character-reversed — `"snoitpmexE"`
@@ -317,22 +340,24 @@ curl -X POST http://127.0.0.1:5000/api/calculate/paye \
 ```json
 {
   "tax_type": "paye",
-  "total_relief": 566000.0,
-  "taxable_income": 634000.0,
-  "computed_tax": 59100.0,
-  "minimum_tax": 12000.0,
-  "minimum_tax_applied": false,
-  "annual_tax": 59100.0,
-  "monthly_tax": 4925.0,
-  "effective_rate": 4.92,
-  "bands": [{ "label": "First ₦300,000", "rate": 7.0, "tax": 21000.0, "applied": true }]
+  "gross_income": 1200000.0,
+  "pension": 96000.0,
+  "nhf": 30000.0,
+  "rent_relief": 0.0,
+  "eligible_deductions": 126000.0,
+  "chargeable_income": 1074000.0,
+  "annual_tax": 41100.0,
+  "monthly_tax": 3425.0,
+  "effective_rate": 3.43,
+  "bands": [{ "label": "First ₦800,000", "rate": 0.0, "tax": 0.0, "applied": true },
+            { "label": "Next ₦2,200,000", "rate": 15.0, "tax": 41100.0, "applied": true }]
 }
 ```
 
 | Type | Required | Optional |
 |---|---|---|
-| `paye` | `gross_income` | `pension`, `nhf` |
-| `cit` | `turnover`, `assessable_profit` | `capital_allowances` |
+| `paye` | `gross_income` (annual) | `pension`, `nhf`, `nhis`, `mortgage_interest`, `life_assurance`, `annual_rent` |
+| `cit` | `turnover`, `assessable_profit`; `fixed_assets` when turnover ≤ ₦100m | `capital_allowances` |
 | `vat` | `amount` | `mode` (`exclusive` \| `inclusive`) |
 | `wht` | `amount`, `transaction_type` | — |
 
@@ -414,7 +439,7 @@ TaxWiz deploys as a standard Python service — no Docker, no extra infrastructu
 pytest
 ```
 
-180 tests covering the tax engine (worked examples verified by hand, band boundaries,
+210 tests covering the tax engine (worked examples verified by hand, band boundaries,
 input validation), the HTTP layer (routing, validation, the JSON error contract, no
 stack-trace leakage), the RAG pipeline (score filtering, prompt construction, citation
 parsing and the no-citation rule, bounded retries, unreadable-passage detection) and the
@@ -449,10 +474,12 @@ far been checked only by hand on a handful of questions.
   one-line `GEMINI_CHAT_MODEL` change — `rag.py` adapts the thinking directive to the
   model generation and retries without it if the model rejects the newer form.
 
-- **The corpus is small.** The index holds 227 passages, almost all statutory
-  definitions; the tables were lost to unreadable extraction (see "Unreadable passages").
-  Questions outside that material correctly return "no relevant information was found"
-  rather than an answer — including some the calculator covers, such as the VAT rate.
+- **The `wiztax-gemini` namespace holds only the Act's definitions.** Its 227 passages
+  come from the interpretation section ("Definition of banking: …"), so "What is VAT?"
+  has nothing to cite there; TaxWiz says so and offers the calculator instead of answering
+  from memory. The `nta2025-gemini` namespace adds the full text of the Act and retrieves
+  the right sections for VAT, withholding and rate questions (see "Building the Knowledge
+  Base"). Point `PINECONE_NAMESPACE` at it to use it.
 - **The chat router understands phrasing it was written for.** It is a set of rules, not
   a language model, so unusual phrasings can be misrouted. The design favours safe
   failures: a calculation request the rules don't recognise goes to the Q&A pipeline,
@@ -464,11 +491,28 @@ far been checked only by hand on a handful of questions.
   data. With Gemini embeddings, off-topic questions still score around 0.59, so the
   threshold rarely filters anything; the no-citation rule is doing that work instead.
   Setting it properly needs a labelled set of answerable and unanswerable questions.
-- **The PAYE schedule predates the 2025 reform.** The bands and reliefs implemented in
-  `tax.py` are the graduated schedule this project was originally built against
-  (7%–24%, CRA of ₦200,000 or 1% of gross plus 20%). They have been kept as-is and
-  documented rather than silently changed. Verify against current Federal Inland Revenue
-  Service guidance before relying on the figures.
+- **What the calculator implements from the Nigeria Tax Act 2025, and what it doesn't.**
+  The rules were checked against the gazetted text (National Assembly copy, "Edited
+  1-1-2026"). Until November 2026 `tax.py` implemented the older, pre-2025 schedule. A
+  check against the Act found that PAYE and CIT were wrong, and both were rewritten from
+  the Act's text.
+
+  | Rule | Source | Status |
+  |---|---|---|
+  | PAYE bands: 0% on the first ₦800,000, then 15 / 18 / 21 / 23 / 25% | Fourth Schedule, s. 58 | ✅ implemented |
+  | PAYE deductions: pension, NHF, NHIS, mortgage interest, life assurance, rent relief (20% of rent, max ₦500,000) | s. 30 | ✅ implemented |
+  | No consolidated relief allowance and no individual minimum tax | absent from the Act | ✅ removed |
+  | Exemption for national-minimum-wage earners | s. 58, s. 162(1)(t) | ⚠ not applied — the Act does not state the wage amount; flagged in chat replies |
+  | CIT: small company 0%, others 30% | s. 56 | ✅ implemented |
+  | Small company: turnover ≤ ₦100m **and** fixed assets ≤ ₦250m | definitions | ✅ implemented |
+  | Development levy: 4% of assessable profit, non-small companies | s. 59 | ✅ implemented (resident companies assumed) |
+  | 15% minimum effective tax rate (turnover ≥ ₦50bn or MNE groups) | s. 57 | ⚠ flagged, not computed — needs audited accounts |
+  | CIT reduced to 25% | s. 56 proviso | ⚠ not applied — only from a date set by presidential order |
+  | VAT 7.5% | s. 147 | ✅ matches |
+  | WHT rates | not in this Act ("prescribed by Nigeria Tax Administration Act") | ⚠ unverified |
+
+  This is still an estimate. The Act is long, and other provisions — exemptions, special
+  regimes, sector rules — are not modelled.
 - **Rates are hardcoded.** Changing a rate means editing `tax.py` and its tests.
 - **No conversation memory.** Each question is answered independently.
 - **Retrieval quality depends on ingestion.** Answers can only be as good as the

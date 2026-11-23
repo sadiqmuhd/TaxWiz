@@ -4,37 +4,67 @@ Every function here is pure: same inputs -> same outputs, no network calls, no
 LLM involvement. The language model in TaxWiz never performs arithmetic; it only
 answers questions about the law. Anything numeric goes through this module.
 
-The rates and reliefs implemented here mirror the schedule the project shipped
-with: the graduated personal income tax bands and reliefs, 7.5% VAT, and the
-turnover-banded company income tax rates. See README "Limitations".
+Source of the rules: the Nigeria Tax Act, 2025 (Act No. 7, Official Gazette
+No. 117, Vol. 112), commencing 1 January 2026, as published by the National
+Assembly ("Edited 1-1-2026" edition). Section references are to that Act and
+were checked against its text, not taken from memory or secondary summaries.
+
+Deliberately NOT implemented, because the Act does not supply the inputs:
+  * the exemption for employees earning the national minimum wage or less
+    (s. 58, s. 162(1)(t)) — the Act does not state the wage amount;
+  * the 15% minimum effective tax rate (s. 57) — it is computed from audited
+    accounts, and applies only to large MNE-group members or companies with
+    turnover of N50bn or more (flagged in the result, not computed);
+  * the reduction of the company rate to 25% — it takes effect only from a
+    date set by presidential order (s. 56 proviso).
+
+Withholding tax rates are not set by this Act: it refers to "the rate prescribed
+by Nigeria Tax Administration Act". WHT_RATES below is therefore unverified.
 """
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-# ── Rate tables ────────────────────────────────────────────────────────────────
+# ── Personal income tax (PAYE) ─────────────────────────────────────────────────
 
-# (width of band, rate, human label). The final band is open-ended.
+# Fourth Schedule: (width of band, rate, label). The final band is open-ended.
 PAYE_BANDS: List[Tuple[float, float, str]] = [
-    (300_000, 0.07, "First ₦300,000"),
-    (300_000, 0.11, "Next ₦300,000"),
-    (500_000, 0.15, "Next ₦500,000"),
-    (500_000, 0.19, "Next ₦500,000"),
-    (1_600_000, 0.21, "Next ₦1,600,000"),
-    (float("inf"), 0.24, "Above ₦3,200,000"),
+    (800_000, 0.00, "First ₦800,000"),
+    (2_200_000, 0.15, "Next ₦2,200,000"),
+    (9_000_000, 0.18, "Next ₦9,000,000"),
+    (13_000_000, 0.21, "Next ₦13,000,000"),
+    (25_000_000, 0.23, "Next ₦25,000,000"),
+    (float("inf"), 0.25, "Above ₦50,000,000"),
 ]
 
-CRA_FLOOR = 200_000           # fixed part of the Consolidated Relief Allowance...
-CRA_FIXED_RATE = 0.01         # ...or 1% of gross income, whichever is higher
-CRA_VARIABLE_RATE = 0.20      # plus 20% of gross income
-MINIMUM_TAX_RATE = 0.01       # 1% of gross income floor
+# s. 30(2)(a)(vi): rent relief of 20% of annual rent paid, at most N500,000.
+RENT_RELIEF_RATE = 0.20
+RENT_RELIEF_CAP = 500_000
 
-VAT_RATE = 0.075
+# s. 30(2)(a): eligible deductions taken at face value, in the order listed there.
+DEDUCTIONS: List[Tuple[str, str]] = [
+    ("nhf", "National Housing Fund contributions"),
+    ("nhis", "National Health Insurance contributions"),
+    ("pension", "Pension contributions"),
+    ("mortgage_interest", "Interest on an owner-occupied home loan"),
+    ("life_assurance", "Life assurance / annuity premiums"),
+]
 
-CIT_SMALL_TURNOVER = 25_000_000
-CIT_MEDIUM_TURNOVER = 100_000_000
-CIT_SMALL_RATE = 0.0
-CIT_MEDIUM_RATE = 0.20
-CIT_LARGE_RATE = 0.30
+# ── VAT ────────────────────────────────────────────────────────────────────────
+
+VAT_RATE = 0.075  # s. 147
+
+# ── Company income tax and development levy ────────────────────────────────────
+
+# Definition of "small company": gross turnover of N100m or less per annum AND
+# total fixed assets not exceeding N250m. Both tests must be met.
+SMALL_COMPANY_TURNOVER = 100_000_000
+SMALL_COMPANY_FIXED_ASSETS = 250_000_000
+CIT_SMALL_RATE = 0.0   # s. 56(a)
+CIT_RATE = 0.30        # s. 56(b)
+DEVELOPMENT_LEVY_RATE = 0.04  # s. 59(1): on assessable profits, not small companies
+MINIMUM_ETR_TURNOVER = 50_000_000_000  # s. 57(2)(b)
+
+# ── Withholding tax (unverified: prescribed under the Tax Administration Act) ──
 
 WHT_RATES: Dict[str, Dict[str, Any]] = {
     "dividends":    {"rate": 0.10, "label": "Dividends / Interest / Rent"},
@@ -80,30 +110,31 @@ def _round(value: float) -> float:
 # ── PAYE (personal income tax) ─────────────────────────────────────────────────
 
 def calculate_paye(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Annual PAYE on employment income, using the graduated band schedule.
+    """Annual personal income tax under the Nigeria Tax Act 2025.
 
-    Reliefs applied: the Consolidated Relief Allowance (higher of N200,000 or 1%
-    of gross, plus 20% of gross), pension contributions and NHF contributions.
-    A minimum tax of 1% of gross income applies where the banded computation
-    produces a smaller figure.
+    Chargeable income is total income less the eligible deductions of s. 30,
+    including rent relief; the Fourth Schedule bands then apply. There is no
+    consolidated relief allowance and no minimum tax for individuals in the Act.
     """
     gross = _amount(payload, "gross_income", required=True)
     if gross <= 0:
         raise TaxInputError("'gross_income' must be greater than zero.")
-    pension = _amount(payload, "pension")
-    nhf = _amount(payload, "nhf")
 
-    cra = max(CRA_FLOOR, gross * CRA_FIXED_RATE) + gross * CRA_VARIABLE_RATE
-    total_relief = min(cra + pension + nhf, gross)
-    taxable_income = max(0.0, gross - total_relief)
+    deductions = {key: _amount(payload, key) for key, _ in DEDUCTIONS}
+    annual_rent = _amount(payload, "annual_rent")
+    rent_relief = min(annual_rent * RENT_RELIEF_RATE, RENT_RELIEF_CAP)
 
-    remaining = taxable_income
-    computed_tax = 0.0
+    claimed = sum(deductions.values()) + rent_relief
+    eligible = min(claimed, gross)          # deductions cannot create a loss
+    chargeable = gross - eligible
+
+    remaining = chargeable
+    annual_tax = 0.0
     bands = []
     for width, rate, label in PAYE_BANDS:
         taxed_here = min(remaining, width) if remaining > 0 else 0.0
         tax_here = taxed_here * rate
-        computed_tax += tax_here
+        annual_tax += tax_here
         remaining -= taxed_here
         bands.append({
             "label": label,
@@ -115,31 +146,30 @@ def calculate_paye(payload: Dict[str, Any]) -> Dict[str, Any]:
         if remaining <= 0:
             break
 
-    minimum_tax = gross * MINIMUM_TAX_RATE
-    annual_tax = max(computed_tax, minimum_tax)
-
-    return {
-        "tax_type": "paye",
-        "gross_income": _round(gross),
-        "pension": _round(pension),
-        "nhf": _round(nhf),
-        "consolidated_relief_allowance": _round(cra),
-        "total_relief": _round(total_relief),
-        "taxable_income": _round(taxable_income),
-        "computed_tax": _round(computed_tax),
-        "minimum_tax": _round(minimum_tax),
-        "minimum_tax_applied": minimum_tax > computed_tax,
+    result = {"tax_type": "paye", "gross_income": _round(gross)}
+    result.update({key: _round(value) for key, value in deductions.items()})
+    result.update({
+        "annual_rent": _round(annual_rent),
+        "rent_relief": _round(rent_relief),
+        "eligible_deductions": _round(eligible),
+        "chargeable_income": _round(chargeable),
         "annual_tax": _round(annual_tax),
         "monthly_tax": _round(annual_tax / 12),
         "effective_rate": round(annual_tax / gross * 100, 2),
         "bands": bands,
-    }
+    })
+    return result
 
 
 # ── Company income tax ─────────────────────────────────────────────────────────
 
 def calculate_cit(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Company income tax, banded by annual turnover."""
+    """Company income tax (s. 56) and development levy (s. 59) for a
+    Nigerian-resident company.
+
+    Whether the company is small depends on turnover AND fixed assets, so
+    `fixed_assets` is required whenever turnover alone does not settle it.
+    """
     turnover = _amount(payload, "turnover", required=True)
     profit = _amount(payload, "assessable_profit", required=True)
     allowances = _amount(payload, "capital_allowances")
@@ -147,35 +177,53 @@ def calculate_cit(payload: Dict[str, Any]) -> Dict[str, Any]:
     if turnover <= 0:
         raise TaxInputError("'turnover' must be greater than zero.")
 
-    if turnover <= CIT_SMALL_TURNOVER:
-        rate = CIT_SMALL_RATE
-        category = "Small company (≤ ₦25M turnover)"
-    elif turnover <= CIT_MEDIUM_TURNOVER:
-        rate = CIT_MEDIUM_RATE
-        category = "Medium company (₦25M – ₦100M turnover)"
+    fixed_assets: Optional[float] = None
+    if turnover <= SMALL_COMPANY_TURNOVER:
+        if payload.get("fixed_assets") in (None, ""):
+            raise TaxInputError(
+                "'fixed_assets' is required when turnover is N100,000,000 or less: a "
+                "company is small only if its fixed assets are also N250,000,000 or less."
+            )
+        fixed_assets = _amount(payload, "fixed_assets", required=True)
+    elif payload.get("fixed_assets") not in (None, ""):
+        fixed_assets = _amount(payload, "fixed_assets")
+
+    is_small = (turnover <= SMALL_COMPANY_TURNOVER
+                and fixed_assets is not None
+                and fixed_assets <= SMALL_COMPANY_FIXED_ASSETS)
+
+    if is_small:
+        rate, category = CIT_SMALL_RATE, "Small company"
     else:
-        rate = CIT_LARGE_RATE
-        category = "Large company (> ₦100M turnover)"
+        rate, category = CIT_RATE, "Not a small company"
 
     taxable_profit = max(0.0, profit - allowances)
-    tax = taxable_profit * rate
+    cit = taxable_profit * rate
+    levy_rate = 0.0 if is_small else DEVELOPMENT_LEVY_RATE
+    levy = profit * levy_rate   # s. 59 charges the levy on assessable profits
 
     return {
         "tax_type": "cit",
         "turnover": _round(turnover),
+        "fixed_assets": None if fixed_assets is None else _round(fixed_assets),
         "category": category,
+        "is_small_company": is_small,
         "rate": round(rate * 100, 2),
         "assessable_profit": _round(profit),
         "capital_allowances": _round(allowances),
         "taxable_profit": _round(taxable_profit),
-        "tax_payable": _round(tax),
+        "tax_payable": _round(cit),
+        "development_levy_rate": round(levy_rate * 100, 2),
+        "development_levy": _round(levy),
+        "total_payable": _round(cit + levy),
+        "minimum_etr_may_apply": turnover >= MINIMUM_ETR_TURNOVER,
     }
 
 
 # ── VAT ────────────────────────────────────────────────────────────────────────
 
 def calculate_vat(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """VAT at 7.5%, on an amount that either excludes or already includes VAT."""
+    """VAT at 7.5% (s. 147), on an amount that excludes or includes VAT."""
     amount = _amount(payload, "amount", required=True)
     if amount <= 0:
         raise TaxInputError("'amount' must be greater than zero.")
@@ -206,7 +254,10 @@ def calculate_vat(payload: Dict[str, Any]) -> Dict[str, Any]:
 # ── Withholding tax ────────────────────────────────────────────────────────────
 
 def calculate_wht(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Withholding tax deducted at source, by transaction category."""
+    """Withholding tax deducted at source, by transaction category.
+
+    The rates are not in the Nigeria Tax Act 2025 and have not been verified.
+    """
     amount = _amount(payload, "amount", required=True)
     if amount <= 0:
         raise TaxInputError("'amount' must be greater than zero.")

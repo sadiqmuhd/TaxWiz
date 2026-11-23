@@ -11,6 +11,9 @@ Two ways to populate the Pinecone namespace the app queries:
   # remove unreadable passages already in the target namespace
   python ingest.py --prune-garbled
 
+  # copy vectors from another namespace built with the SAME embedding model
+  python ingest.py --copy-from wiztax-gemini
+
 The second form exists because the chunk text is kept in each vector's metadata,
 so an index can be re-embedded with a different model without the original
 documents. Embeddings from different models are not interchangeable — always
@@ -208,6 +211,44 @@ def embed_with_retry(texts: List[str]) -> List[List[float]]:
             time.sleep(wait)
 
 
+def copy_namespace(index, source: str, target: str, dry_run: bool) -> int:
+    """Copy vectors (values and metadata) from `source` into `target`.
+
+    No re-embedding, so no Gemini calls. Only valid when both namespaces were
+    built with the same embedding model: that cannot be checked from the
+    vectors themselves, so it is the caller's responsibility. Unreadable
+    passages and ids already present in `target` are skipped.
+    """
+    if source == target:
+        raise SystemExit("Source and target namespace are the same ('%s')." % source)
+    ids = [vector_id for page in index.list(namespace=source) for vector_id in page]
+    if not ids:
+        raise SystemExit("Namespace '%s' is empty — nothing to copy." % source)
+    already = existing_ids(index, target)
+
+    vectors, garbled = [], 0
+    for offset in range(0, len(ids), 100):
+        fetched = index.fetch(ids=ids[offset:offset + 100], namespace=source)
+        for vector_id, vector in fetched.vectors.items():
+            metadata = dict(vector.metadata or {})
+            if vector_id in already:
+                continue
+            if looks_reversed(metadata.get("text") or ""):
+                garbled += 1
+                continue
+            metadata.setdefault("source", source)
+            vectors.append({"id": vector_id, "values": list(vector.values),
+                            "metadata": metadata})
+
+    logger.info("'%s' -> '%s': %d to copy, %d already present, %d unreadable skipped",
+                source, target, len(vectors), len(ids) - len(vectors) - garbled, garbled)
+    if not dry_run:
+        for offset in range(0, len(vectors), 100):
+            index.upsert(vectors=vectors[offset:offset + 100], namespace=target)
+        logger.info("copied %d vector(s) into '%s'", len(vectors), target)
+    return len(vectors)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Index passages into Pinecone for TaxWiz.")
     source = parser.add_mutually_exclusive_group()
@@ -223,11 +264,18 @@ def main() -> int:
     parser.add_argument("--prune-garbled", action="store_true",
                         help="delete unreadable (character-reversed) passages from "
                              "the target namespace, then exit")
+    parser.add_argument("--copy-from", metavar="NAMESPACE",
+                        help="copy vectors from NAMESPACE (same embedding model) into "
+                             "the target namespace without re-embedding, then exit")
     args = parser.parse_args()
 
-    if args.prune_garbled and (args.source or args.from_namespace):
-        parser.error("--prune-garbled cannot be combined with --source or --from-namespace")
-    if not args.source and not args.from_namespace and not args.prune_garbled:
+    maintenance = args.prune_garbled or args.copy_from
+    if args.prune_garbled and args.copy_from:
+        parser.error("--prune-garbled and --copy-from cannot be combined")
+    if maintenance and (args.source or args.from_namespace):
+        parser.error("--prune-garbled/--copy-from cannot be combined with "
+                     "--source or --from-namespace")
+    if not args.source and not args.from_namespace and not maintenance:
         args.source = "data"
 
     # Import here so --help works without dependencies or credentials.
@@ -249,7 +297,7 @@ def main() -> int:
                         len(pieces), target)
             return 0
 
-    required = ("PINECONE_API_KEY",) if args.prune_garbled else ("GEMINI_API_KEY", "PINECONE_API_KEY")
+    required = ("PINECONE_API_KEY",) if maintenance else ("GEMINI_API_KEY", "PINECONE_API_KEY")
     for variable in required:
         if not os.getenv(variable):
             raise SystemExit("%s is not set. Copy .env.example to .env first." % variable)
@@ -260,6 +308,9 @@ def main() -> int:
 
     if args.prune_garbled:
         prune_garbled(pc.Index(rag.PINECONE_INDEX), target, args.dry_run)
+        return 0
+    if args.copy_from:
+        copy_namespace(pc.Index(rag.PINECONE_INDEX), args.copy_from, target, args.dry_run)
         return 0
     existing = [index.name for index in pc.list_indexes()]
     if rag.PINECONE_INDEX not in existing:

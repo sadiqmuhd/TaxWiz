@@ -46,13 +46,15 @@ def test_calculate_paye_endpoint(client):
 
     assert response.status_code == 200
     body = response.get_json()
-    assert body["annual_tax"] == 59_100
-    assert body["monthly_tax"] == 4_925
-    assert len(body["bands"]) == 3
+    # chargeable 1,074,000: 800,000 @ 0% + 274,000 @ 15% = 41,100 (Fourth Schedule)
+    assert body["annual_tax"] == 41_100
+    assert body["monthly_tax"] == 3_425
+    assert len(body["bands"]) == 2
 
 
 @pytest.mark.parametrize("tax_type,payload", [
-    ("cit", {"turnover": 50_000_000, "assessable_profit": 12_000_000}),
+    ("cit", {"turnover": 50_000_000, "fixed_assets": 30_000_000,
+             "assessable_profit": 12_000_000}),
     ("vat", {"amount": 500_000, "mode": "exclusive"}),
     ("wht", {"amount": 1_000_000, "transaction_type": "contracts"}),
 ])

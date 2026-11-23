@@ -535,3 +535,62 @@ def test_ingestion_drops_unreadable_passages_and_keeps_the_rest():
               {"id": "bad", "text": REVERSED_SAMPLES[0], "source": "s"}]
 
     assert [p["id"] for p in ingest.keep_readable(pieces)] == ["good"]
+
+
+# ── Copying vectors between namespaces (fake index, no network) ────────────────
+
+class FakeVector:
+    def __init__(self, text):
+        self.values = [0.1, 0.2]
+        self.metadata = {"text": text}
+
+
+class FakeNamespacedIndex:
+    """Just enough of the Pinecone index API for copy_namespace."""
+
+    def __init__(self, namespaces):
+        self.namespaces = namespaces            # {name: {id: FakeVector}}
+        self.upserts = []
+
+    def list(self, namespace):
+        yield list(self.namespaces.get(namespace, {}))
+
+    def fetch(self, ids, namespace):
+        class Fetched:
+            vectors = {i: self.namespaces[namespace][i] for i in ids}
+        return Fetched()
+
+    def upsert(self, vectors, namespace):
+        self.upserts.append((namespace, [v["id"] for v in vectors]))
+
+
+def test_copy_namespace_copies_new_readable_vectors_only():
+    import ingest
+
+    index = FakeNamespacedIndex({
+        "defs": {"chunk-1": FakeVector(READABLE_SAMPLES[0]),
+                 "chunk-2": FakeVector(READABLE_SAMPLES[1]),
+                 "chunk-3": FakeVector(REVERSED_SAMPLES[0])},
+        "act": {"chunk-2": FakeVector(READABLE_SAMPLES[1])},     # already copied
+    })
+
+    copied = ingest.copy_namespace(index, "defs", "act", dry_run=False)
+
+    assert copied == 1
+    assert index.upserts == [("act", ["chunk-1"])]
+
+
+def test_copy_namespace_dry_run_writes_nothing():
+    import ingest
+
+    index = FakeNamespacedIndex({"defs": {"chunk-1": FakeVector(READABLE_SAMPLES[0])}})
+
+    assert ingest.copy_namespace(index, "defs", "act", dry_run=True) == 1
+    assert index.upserts == []
+
+
+def test_copy_namespace_refuses_to_copy_onto_itself():
+    import ingest
+
+    with pytest.raises(SystemExit):
+        ingest.copy_namespace(FakeNamespacedIndex({}), "defs", "defs", dry_run=False)

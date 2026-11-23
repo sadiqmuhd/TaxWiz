@@ -74,9 +74,9 @@ def test_monthly_paye_request_is_calculated_by_the_engine(no_ai, calc_spy):
 
     assert reply["type"] == "calculation"
     assert calc_spy == [("paye", {"gross_income": 6_000_000})]
-    # Hand-checked: reliefs 1,400,000; taxable 4,600,000;
-    # 21,000 + 33,000 + 75,000 + 95,000 + 336,000 + 336,000 = 896,000.
-    assert reply["calculation"]["annual_tax"] == 896_000
+    # Fourth Schedule, no deductions: 800,000 @ 0% + 2,200,000 @ 15% + 3,000,000 @ 18%
+    # = 0 + 330,000 + 540,000 = 870,000.
+    assert reply["calculation"]["annual_tax"] == 870_000
     assert reply["calculation"] == tax.calculate_paye({"gross_income": 6_000_000})
     assert "annualised" in reply["reply"]
 
@@ -85,7 +85,31 @@ def test_explicit_paye_request_with_pension(no_ai, calc_spy):
     reply = chat.respond("I earn ₦500,000 monthly and pay ₦40,000 pension. Calculate PAYE")
 
     assert calc_spy == [("paye", {"gross_income": 6_000_000, "pension": 480_000})]
-    assert reply["calculation"]["annual_tax"] == 780_800
+    # chargeable 5,520,000: 330,000 + 2,520,000 @ 18% (453,600) = 783,600
+    assert reply["calculation"]["annual_tax"] == 783_600
+
+
+def test_rent_is_read_and_passed_to_the_engine(no_ai, calc_spy):
+    reply = chat.respond("I earn ₦500,000 monthly and pay ₦1,000,000 rent a year. "
+                         "Calculate my PAYE")
+
+    assert calc_spy == [("paye", {"gross_income": 6_000_000, "annual_rent": 1_000_000})]
+    # rent relief 200,000 -> chargeable 5,800,000 -> 330,000 + 504,000 = 834,000
+    assert reply["calculation"]["annual_tax"] == 834_000
+    assert any(row[0].startswith("Rent relief") for row in reply["breakdown"])
+
+
+def test_monthly_rent_is_annualised_like_income(no_ai, calc_spy):
+    chat.respond("Calculate PAYE: salary ₦500,000 monthly, rent ₦100,000 monthly")
+
+    assert calc_spy[0][1]["annual_rent"] == 1_200_000
+
+
+def test_low_incomes_mention_the_minimum_wage_exemption(no_ai):
+    reply = chat.respond("Calculate PAYE on ₦70,000 monthly")
+
+    assert "minimum wage" in reply["reply"]
+    assert "s. 58" in reply["reply"]
 
 
 def test_yearly_income_is_not_multiplied(no_ai, calc_spy):
@@ -110,11 +134,28 @@ def test_vat_inclusive_request(no_ai, calc_spy):
 
 
 def test_cit_request(no_ai, calc_spy):
-    reply = chat.respond("Calculate CIT: turnover ₦50m, profit ₦12m, capital allowances ₦2m")
+    reply = chat.respond("Calculate CIT: turnover ₦500m, profit ₦12m, capital allowances ₦2m")
+
+    assert calc_spy == [("cit", {"turnover": 500_000_000, "assessable_profit": 12_000_000,
+                                  "capital_allowances": 2_000_000})]
+    # CIT 10,000,000 x 30% = 3,000,000; levy 12,000,000 x 4% = 480,000
+    assert reply["calculation"]["total_payable"] == 3_480_000
+    assert "development levy" in reply["reply"]
+
+
+def test_small_company_needs_fixed_assets_then_pays_nothing(no_ai, calc_spy):
+    first = chat.respond("Calculate CIT: turnover ₦50m, profit ₦12m")
+    assert first["type"] == "clarification"
+    assert "fixed assets" in first["reply"]
+    assert calc_spy == []
+
+    reply = chat.respond("₦30m", first["pending"])
 
     assert calc_spy == [("cit", {"turnover": 50_000_000, "assessable_profit": 12_000_000,
-                                  "capital_allowances": 2_000_000})]
-    assert reply["calculation"]["tax_payable"] == 2_000_000
+                                  "fixed_assets": 30_000_000})]
+    assert reply["calculation"]["is_small_company"] is True
+    assert reply["calculation"]["total_payable"] == 0
+    assert "small company" in reply["reply"]
 
 
 def test_wht_request(no_ai, calc_spy):
@@ -192,6 +233,62 @@ def test_an_ungrounded_rag_result_stays_ungrounded(monkeypatch):
     assert reply["sources"] == []
 
 
+# ── Questions the corpus cannot answer ─────────────────────────────────────────
+
+@pytest.fixture
+def empty_corpus(monkeypatch):
+    """RAG finds nothing it can cite — the real situation for "What is VAT?",
+    because the indexed corpus is only the Act's definitions section."""
+    questions = []
+
+    def answer(question):
+        questions.append(question)
+        return {"answer": rag.NO_ANSWER, "sources": [], "grounded": False}
+
+    monkeypatch.setattr(rag, "answer_question", answer)
+    return questions
+
+
+@pytest.mark.parametrize("question", ["What is VAT?", "VAT", "Explain value added tax"])
+def test_an_unsourced_tax_question_offers_the_calculator(empty_corpus, calc_spy, question):
+    reply = chat.respond(question)
+
+    assert empty_corpus == [question]          # RAG was still consulted first
+    assert reply["type"] == "answer"
+    assert reply["grounded"] is False
+    assert reply["sources"] == []
+    assert "won't answer from memory" in reply["reply"]
+    assert "Calculate VAT on" in reply["reply"]
+    assert "not been independently verified" in reply["reply"]
+    assert calc_spy == []                      # an offer, not a calculation
+
+
+def test_the_offer_quotes_the_engines_rate_rather_than_a_copy(empty_corpus, monkeypatch):
+    """If tax.py's rate changes, the chat must say the new rate."""
+    monkeypatch.setattr(tax, "VAT_RATE", 0.1)
+
+    assert "VAT at 10%" in chat.respond("What is VAT?")["reply"]
+
+
+def test_the_offer_covers_every_tax_named(empty_corpus):
+    reply = chat.respond("What are the differences between PAYE and withholding tax?")["reply"]
+
+    assert "PAYE" in reply and "withholding tax" in reply
+    assert "0% to 25%" in reply and "5% or 10%" in reply
+
+
+def test_an_unsourced_question_naming_no_tax_gets_the_plain_refusal(empty_corpus):
+    reply = chat.respond("What is the capital of France?")
+
+    assert reply["reply"] == rag.NO_ANSWER
+
+
+def test_a_grounded_answer_is_never_replaced_by_the_offer(rag_recorder):
+    reply = chat.respond("What is PAYE?")
+
+    assert reply["reply"] == "PAYE is a tax deducted from salaries. [1]"
+
+
 # ── Missing information is asked for, never invented ───────────────────────────
 
 def test_paye_without_income_asks_for_it(no_ai, calc_spy):
@@ -262,16 +359,23 @@ def test_paye_completed_over_three_turns(no_ai, calc_spy):
 
 def test_cit_completed_after_a_clarification(no_ai, calc_spy):
     reply = converse("What is the company income tax on my business profit?",
-                     "turnover ₦50m, profit ₦12m")
+                     "turnover ₦50m, profit ₦12m",
+                     "fixed assets of ₦400m")
 
-    assert calc_spy == [("cit", {"turnover": 50_000_000, "assessable_profit": 12_000_000})]
-    assert reply["calculation"]["tax_payable"] == 2_400_000
+    assert calc_spy == [("cit", {"turnover": 50_000_000, "assessable_profit": 12_000_000,
+                                  "fixed_assets": 400_000_000})]
+    # Turnover is within the small-company limit but assets are not, so the
+    # company is taxed: 12,000,000 x 30% = 3,600,000; levy x 4% = 480,000.
+    assert reply["calculation"]["is_small_company"] is False
+    assert reply["calculation"]["total_payable"] == 4_080_000
 
 
 def test_a_single_unlabelled_figure_fills_the_one_missing_slot(no_ai, calc_spy):
-    reply = converse("Calculate CIT, my turnover is ₦50m", "₦12m")
+    # Above N100m turnover no fixed-assets figure is needed, so profit is the
+    # only missing slot and a bare amount can fill it.
+    reply = converse("Calculate CIT, my turnover is ₦500m", "₦12m")
 
-    assert calc_spy == [("cit", {"turnover": 50_000_000, "assessable_profit": 12_000_000})]
+    assert calc_spy == [("cit", {"turnover": 500_000_000, "assessable_profit": 12_000_000})]
     assert reply["type"] == "calculation"
 
 
