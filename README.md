@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.11-blue)
 ![Flask](https://img.shields.io/badge/Flask-3.1-lightgrey)
 ![Pinecone](https://img.shields.io/badge/Vector_DB-Pinecone-purple)
-![Tests](https://img.shields.io/badge/tests-69%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-92%20passing-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ---
@@ -32,10 +32,13 @@ TaxWiz uses each for what it is good at.
 - **Deterministic tax engine** — PAYE (graduated bands, CRA/pension/NHF reliefs, 1%
   minimum tax), CIT (turnover-banded 0/20/30%), VAT (7.5%, inclusive or exclusive) and
   WHT (5% / 10% by transaction type).
-- **Grounded Q&A** — retrieval-augmented answers with numbered citations and a source
-  panel showing each passage and its similarity score.
-- **Honest empty results** — below the similarity threshold, the LLM is never called;
-  the user is told nothing relevant was found.
+- **Grounded Q&A** — retrieval-augmented answers with numbered citations. The source
+  panel shows only the passages the answer actually cites, with their similarity scores.
+- **No citation, no claim** — an answer that cites no retrieved passage is withheld and
+  reported as ungrounded, whether it is a greeting or a confident claim from the model's
+  own knowledge. Below the similarity threshold the LLM is never called at all.
+- **Resilient generation** — a transient Gemini 5xx is retried once after a short pause;
+  quota errors (429) are not, since retrying them only spends more quota.
 - **Clean JSON API** — every endpoint returns either data or `{"error", "message"}`.
   Stack traces never reach the user.
 - **Graceful degradation** — missing or invalid credentials produce a readable message
@@ -180,6 +183,23 @@ python ingest.py --from-namespace wiztax
 That reads every passage out of the `wiztax` namespace and writes freshly embedded
 copies into whatever `PINECONE_NAMESPACE` currently points at.
 
+### Unreadable passages
+
+Some PDF table layouts come out of text extraction character-reversed — `"snoitpmexE"`
+for "Exemptions". Such passages can never answer a question, yet they score well enough
+to be retrieved and shown as sources. Every ingestion path skips them, and passages
+already indexed can be removed with:
+
+```bash
+python ingest.py --prune-garbled --dry-run   # list them
+python ingest.py --prune-garbled             # delete them
+```
+
+Detection (`looks_reversed` in `ingest.py`) compares how many common English function
+words appear forwards ("the", "of") against backwards ("eht", "fo"). On this corpus it
+flagged exactly the 33 reversed table dumps out of 260 passages, with no false positives;
+those 33 were pruned from `wiztax-gemini`, leaving 227. The originals remain in `wiztax`.
+
 ### One rule worth knowing
 
 **Embeddings from different models are not comparable.** A `gemini-embedding-001` vector
@@ -254,7 +274,8 @@ curl -X POST http://127.0.0.1:5000/api/ask \
 }
 ```
 
-When nothing relevant is retrieved, `grounded` is `false`, `sources` is empty, and the
+`sources` lists only the passages the answer cites. When nothing relevant is retrieved,
+or the model's reply cites no passage, `grounded` is `false`, `sources` is empty, and the
 answer says no relevant information was found.
 
 ### `GET /api/tax-types`
@@ -315,15 +336,21 @@ TaxWiz deploys as a standard Python service — no Docker, no extra infrastructu
 pytest
 ```
 
-69 tests covering the tax engine (worked examples verified by hand, band boundaries,
+92 tests covering the tax engine (worked examples verified by hand, band boundaries,
 input validation), the HTTP layer (routing, validation, the JSON error contract, no
-stack-trace leakage) and the RAG pipeline (score filtering, prompt construction, empty
-retrieval, upstream failure handling).
+stack-trace leakage) and the RAG pipeline (score filtering, prompt construction, citation
+parsing and the no-citation rule, bounded retries, unreadable-passage detection).
 
-`tests/test_rag.py` also contains a live check that the configured Pinecone namespace
-exists, has the right dimension and actually holds vectors. It is skipped automatically
-when `PINECONE_API_KEY` is not set. If you point `PINECONE_NAMESPACE` at a namespace you
-have not built yet, this test fails on purpose and tells you to run `ingest.py`.
+`tests/test_rag.py` also contains two live checks, skipped automatically when
+`PINECONE_API_KEY` is not set:
+
+- the configured namespace exists, has the right dimension and holds vectors;
+- it contains **no unreadable passages**. The first check alone once passed while 12% of
+  the corpus was reversed text — counting vectors is not checking content.
+
+What the suite does not establish: that the tax rates match current law, or that real
+answers are correct. Generation tests use fake clients by design; answer quality has so
+far been checked only by hand on a handful of questions.
 
 ---
 
@@ -335,9 +362,14 @@ have not built yet, this test fails on purpose and tells you to run `ingest.py`.
   one-line `GEMINI_CHAT_MODEL` change — `rag.py` adapts the thinking directive to the
   model generation and retries without it if the model rejects the newer form.
 
-- **The corpus is small.** The index holds a few hundred passages, mostly statutory
-  definitions. Questions outside that material correctly return "no relevant information
-  was found" rather than an answer.
+- **The corpus is small.** The index holds 227 passages, almost all statutory
+  definitions; the tables were lost to unreadable extraction (see "Unreadable passages").
+  Questions outside that material correctly return "no relevant information was found"
+  rather than an answer — including some the calculator covers, such as the VAT rate.
+- **The similarity threshold is not calibrated.** `RAG_MIN_SCORE=0.25` was chosen without
+  data. With Gemini embeddings, off-topic questions still score around 0.59, so the
+  threshold rarely filters anything; the no-citation rule is doing that work instead.
+  Setting it properly needs a labelled set of answerable and unanswerable questions.
 - **The PAYE schedule predates the 2025 reform.** The bands and reliefs implemented in
   `tax.py` are the graduated schedule this project was originally built against
   (7%–24%, CRA of ₦200,000 or 1% of gross plus 20%). They have been kept as-is and

@@ -8,16 +8,24 @@ Two ways to populate the Pinecone namespace the app queries:
   # re-embed passages already stored in another namespace's metadata
   python ingest.py --from-namespace wiztax
 
+  # remove unreadable passages already in the target namespace
+  python ingest.py --prune-garbled
+
 The second form exists because the chunk text is kept in each vector's metadata,
 so an index can be re-embedded with a different model without the original
 documents. Embeddings from different models are not interchangeable — always
 write them to a namespace of their own.
+
+Every path filters out passages whose text came out of PDF extraction
+character-reversed (see looks_reversed): they can never answer a question, yet
+they score well enough to be retrieved and shown to users as sources.
 """
 
 import argparse
 import glob
 import logging
 import os
+import re
 import sys
 import time
 from typing import Dict, Iterator, List
@@ -85,6 +93,38 @@ def chunk(text: str) -> List[str]:
     return chunks
 
 
+# Short English function words, and the same words spelled backwards. Ordinary
+# prose is full of the first set; text that PDF extraction read right-to-left
+# (it happens with some table layouts) is full of the second. None of the
+# reversed forms is itself an English word, so the two sets cannot collide.
+FORWARD_WORDS = frozenset(("the", "of", "and", "for", "is", "to", "in", "by", "or",
+                           "any", "which", "from", "with", "that", "as"))
+REVERSED_WORDS = frozenset(word[::-1] for word in FORWARD_WORDS)
+
+
+def looks_reversed(text: str) -> bool:
+    """True when `text` reads as character-reversed English.
+
+    Validated against the 260-passage TaxWiz corpus: it flags exactly the 33
+    table dumps that extraction reversed (e.g. "snoitpmexE" for "Exemptions")
+    and none of the 227 readable definitions.
+    """
+    words = re.findall(r"[a-z]+", text.lower())
+    forward = sum(word in FORWARD_WORDS for word in words)
+    backward = sum(word in REVERSED_WORDS for word in words)
+    return backward >= 3 and backward > forward
+
+
+def keep_readable(pieces: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Drop passages that came out of extraction unreadable, saying how many."""
+    readable = [piece for piece in pieces if not looks_reversed(piece["text"])]
+    dropped = len(pieces) - len(readable)
+    if dropped:
+        logger.warning("skipping %d passage(s) whose text is character-reversed "
+                       "(unreadable PDF extraction)", dropped)
+    return readable
+
+
 def pieces_from_documents(source_dir: str) -> List[Dict[str, str]]:
     documents = list(read_documents(source_dir))
     pieces = []
@@ -93,7 +133,7 @@ def pieces_from_documents(source_dir: str) -> List[Dict[str, str]]:
             pieces.append({"id": "%s-%d" % (os.path.splitext(name)[0], position),
                            "text": body, "source": name})
     logger.info("%d document(s) -> %d chunk(s)", len(documents), len(pieces))
-    return pieces
+    return keep_readable(pieces)
 
 
 def pieces_from_namespace(index, namespace: str) -> List[Dict[str, str]]:
@@ -113,7 +153,33 @@ def pieces_from_namespace(index, namespace: str) -> List[Dict[str, str]]:
                                "source": metadata.get("source", namespace)})
 
     logger.info("read %d passage(s) from namespace '%s'", len(pieces), namespace)
-    return pieces
+    return keep_readable(pieces)
+
+
+def prune_garbled(index, namespace: str, dry_run: bool) -> int:
+    """Delete unreadable passages already stored in `namespace`.
+
+    Nothing is lost for good: the text was copied from another namespace (or a
+    source document) and can be re-ingested from there.
+    """
+    ids = [vector_id for page in index.list(namespace=namespace) for vector_id in page]
+    garbled = []
+    for offset in range(0, len(ids), 100):
+        fetched = index.fetch(ids=ids[offset:offset + 100], namespace=namespace)
+        for vector_id, vector in fetched.vectors.items():
+            if looks_reversed((vector.metadata or {}).get("text") or ""):
+                garbled.append(vector_id)
+
+    logger.info("%d of %d passage(s) in '%s' are character-reversed",
+                len(garbled), len(ids), namespace)
+    if garbled and not dry_run:
+        for offset in range(0, len(garbled), 100):
+            index.delete(ids=garbled[offset:offset + 100], namespace=namespace)
+        logger.info("deleted %d unreadable passage(s): %s",
+                    len(garbled), ", ".join(sorted(garbled)))
+    elif garbled:
+        logger.info("dry run: would delete %s", ", ".join(sorted(garbled)))
+    return len(garbled)
 
 
 def existing_ids(index, namespace: str) -> set:
@@ -154,9 +220,14 @@ def main() -> int:
                         help="report what would be written; do not embed or upsert")
     parser.add_argument("--overwrite", action="store_true",
                         help="re-embed passages already present in the target namespace")
+    parser.add_argument("--prune-garbled", action="store_true",
+                        help="delete unreadable (character-reversed) passages from "
+                             "the target namespace, then exit")
     args = parser.parse_args()
 
-    if not args.source and not args.from_namespace:
+    if args.prune_garbled and (args.source or args.from_namespace):
+        parser.error("--prune-garbled cannot be combined with --source or --from-namespace")
+    if not args.source and not args.from_namespace and not args.prune_garbled:
         args.source = "data"
 
     # Import here so --help works without dependencies or credentials.
@@ -178,13 +249,18 @@ def main() -> int:
                         len(pieces), target)
             return 0
 
-    for variable in ("GEMINI_API_KEY", "PINECONE_API_KEY"):
+    required = ("PINECONE_API_KEY",) if args.prune_garbled else ("GEMINI_API_KEY", "PINECONE_API_KEY")
+    for variable in required:
         if not os.getenv(variable):
             raise SystemExit("%s is not set. Copy .env.example to .env first." % variable)
 
     from pinecone import Pinecone, ServerlessSpec
 
     pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+
+    if args.prune_garbled:
+        prune_garbled(pc.Index(rag.PINECONE_INDEX), target, args.dry_run)
+        return 0
     existing = [index.name for index in pc.list_indexes()]
     if rag.PINECONE_INDEX not in existing:
         if not args.create_index:

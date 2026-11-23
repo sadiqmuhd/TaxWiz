@@ -18,7 +18,9 @@ credentials are missing.
 import logging
 import math
 import os
+import re
 import threading
+import time
 from typing import Any, Dict, List
 
 from dotenv import load_dotenv
@@ -52,6 +54,8 @@ MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.25"))
 MAX_OUTPUT_TOKENS = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "800"))
 # "low"/"high" on Gemini 3.x, or "off" to send no thinking config at all.
 THINKING_LEVEL = os.getenv("GEMINI_THINKING_LEVEL", "low")
+# Pause before the single retry of a transient (5xx) generation failure.
+TRANSIENT_RETRY_DELAY = float(os.getenv("LLM_RETRY_DELAY_SECONDS", "1.5"))
 MAX_QUESTION_CHARS = 1000
 
 NO_ANSWER = (
@@ -252,20 +256,40 @@ def _rejected_the_argument(exc: Exception) -> bool:
     return getattr(exc, "code", None) == 400 or "INVALID_ARGUMENT" in str(exc)
 
 
+def _is_transient(exc: Exception) -> bool:
+    """True for server-side blips worth one quick retry.
+
+    Deliberately excludes 429: a quota rejection will not clear in a second
+    or two, and retrying it only spends more of the quota.
+    """
+    code = getattr(exc, "code", None)
+    if code in (500, 502, 503, 504):
+        return True
+    text = str(exc)
+    return any(marker in text for marker in ("UNAVAILABLE", "DEADLINE_EXCEEDED", "INTERNAL"))
+
+
 def generate(prompt: str) -> str:
     """Ask the language model for an answer.
 
-    `thinking_level` is a Gemini 3.x setting; the 2.5-era models take a numeric
-    `thinking_budget` instead and reject it with a bare 400. Rather than tie the
-    code to one model generation, drop the directive and retry once — so
-    changing GEMINI_CHAT_MODEL really is a one-line change.
+    Two narrowly scoped retries, at most three calls in total:
+
+    * `thinking_level` is a Gemini 3.x setting; 2.5-era models take a numeric
+      `thinking_budget` and reject it with a bare 400. On that rejection the
+      directive is dropped and the call repeated, so changing GEMINI_CHAT_MODEL
+      really is a one-line change.
+    * Gemini returns 503 under load (observed on Railway). One retry after a
+      short pause turns most of those blips into a normal answer instead of an
+      error in front of the user.
     """
     from google.genai import types
 
     client = get_gemini_client()
     response = None
+    with_thinking = True
+    retried_transient = False
 
-    for with_thinking in (True, False):
+    while True:
         try:
             response = client.models.generate_content(
                 model=CHAT_MODEL,
@@ -277,6 +301,13 @@ def generate(prompt: str) -> str:
             if with_thinking and _rejected_the_argument(exc):
                 logger.info("%s rejected thinking_level=%s; retrying without it",
                             CHAT_MODEL, THINKING_LEVEL)
+                with_thinking = False
+                continue
+            if not retried_transient and _is_transient(exc):
+                logger.warning("%s transient failure (%s); retrying once in %.1fs",
+                               CHAT_MODEL, type(exc).__name__, TRANSIENT_RETRY_DELAY)
+                retried_transient = True
+                time.sleep(TRANSIENT_RETRY_DELAY)
                 continue
             logger.exception("Generation failed")
             raise RagError(
@@ -309,13 +340,36 @@ def answer_question(question: str) -> Dict[str, Any]:
         return {"answer": NO_ANSWER, "sources": [], "grounded": False}
 
     answer = generate(build_prompt(question, passages))
+    cited = cited_passages(answer, passages)
 
-    # Passages can clear the similarity threshold and still not answer the
-    # question, in which case the model returns the refusal text. Report that
-    # as ungrounded so the response never claims support it does not have.
-    if answer.strip().rstrip(".") == NO_ANSWER.rstrip("."):
+    # No citation, no claim. The model is told to cite the passages it used,
+    # so an answer that cites none either declined (the refusal text) or came
+    # from somewhere other than the corpus — a greeting at best, prior
+    # knowledge at worst. Neither is shown as a sourced answer.
+    if not cited:
+        if answer.strip().rstrip(".") != NO_ANSWER.rstrip("."):
+            logger.info("Withheld an uncited answer to %r: %r", question, answer[:200])
         return {"answer": NO_ANSWER, "sources": [], "grounded": False}
 
     sources = [{"id": p["id"], "score": p["score"], "excerpt": p["text"][:220]}
-               for p in passages]
+               for p in cited]
     return {"answer": answer, "sources": sources, "grounded": True}
+
+
+def cited_passages(answer: str, passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The passages an answer actually cites, in passage order.
+
+    Understands "[2]", "[1, 3]", "[1][2]" and "[1-3]". Numbers that point at no
+    passage are ignored, so a model inventing "[9]" cannot manufacture support.
+    """
+    numbers = set()
+    for group in re.findall(r"\[([\d,\s\-–]+)\]", answer):
+        for part in re.split(r"[,\s]+", group.strip()):
+            bounds = re.split(r"[-–]", part)
+            if len(bounds) == 2 and bounds[0].isdigit() and bounds[1].isdigit():
+                low, high = int(bounds[0]), int(bounds[1])
+                if low <= high and high - low <= len(passages):
+                    numbers.update(range(low, high + 1))
+            elif part.isdigit():
+                numbers.add(int(part))
+    return [p for i, p in enumerate(passages, start=1) if i in numbers]
