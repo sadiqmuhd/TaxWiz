@@ -26,9 +26,10 @@ import rag
 import tax
 
 ESTIMATE_NOTICE = (
-    "Estimate only. TaxWiz applies its own built-in rates, which have not been "
-    "independently verified against current Nigerian tax law. Confirm your actual "
-    "liability with FIRS or a qualified tax professional."
+    "Estimate only. TaxWiz's rules are its own reading of the Nigeria Tax Act 2025 "
+    "and have not been independently verified by a tax professional. Confirm your "
+    "actual liability with the Nigeria Revenue Service (NRS) or a qualified tax "
+    "professional."
 )
 
 TAX_NAMES = {

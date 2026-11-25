@@ -526,7 +526,7 @@ far been checked only by hand on a handful of questions.
 
 TaxWiz is an informational and technical demonstration project. It does not constitute
 tax, legal or financial advice, and it does not replace a qualified tax professional.
-Always verify figures and interpretations with the Federal Inland Revenue Service or a
+Always verify figures and interpretations with the Nigeria Revenue Service (NRS) or a
 certified practitioner before acting on them.
 
 ---
